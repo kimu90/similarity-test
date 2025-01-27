@@ -8,22 +8,30 @@ from typing import List, Dict, Optional
 from sklearn.metrics.pairwise import cosine_similarity
 import logging
 from config import config
-from src.storage.db_manager import DatabaseManager
 
 class CentroidCalculator:
-    def __init__(self, config: Dict):
+    def __init__(self, config: Dict, db_manager=None):
         """
         Initialize centroid calculator
+        
         Args:
             config: Configuration with min vectors and other settings
+            db_manager: Optional database manager
         """
         self.min_vectors = config.get('min_vectors', 3)
         self.logger = logging.getLogger(__name__)
-        self.db_manager = DatabaseManager(config)
+        
+        # Lazy import of DatabaseManager to avoid circular imports
+        if db_manager is None:
+            from src.storage.db_manager import DatabaseManager
+            db_manager = DatabaseManager(config)
+        
+        self.db_manager = db_manager
 
     def load_true_embeddings(self) -> np.ndarray:
         """
         Load TRUE set embeddings from database
+        
         Returns:
             Numpy array of TRUE set embeddings
         """
@@ -42,34 +50,42 @@ class CentroidCalculator:
     def calculate_centroid(self, embeddings: np.ndarray) -> np.ndarray:
         """
         Calculate centroid of embeddings
+        
         Args:
             embeddings: Matrix of embeddings
+        
         Returns:
             Centroid vector
         """
         return np.mean(embeddings, axis=0)
 
-    def update_centroid(self, current_centroid: np.ndarray,
+    def update_centroid(self, 
+                        current_centroid: np.ndarray,
                         new_embedding: np.ndarray,
                         weight: float = 0.1) -> np.ndarray:
         """
         Update centroid with new embedding
+        
         Args:
             current_centroid: Current centroid vector
             new_embedding: New embedding to incorporate
             weight: Weight for new embedding
+        
         Returns:
             Updated centroid
         """
         return (1 - weight) * current_centroid + weight * new_embedding
 
-    def get_distance_to_centroid(self, embedding: np.ndarray,
+    def get_distance_to_centroid(self, 
+                                  embedding: np.ndarray,
                                   centroid: np.ndarray) -> float:
         """
         Calculate cosine similarity to centroid
+        
         Args:
             embedding: Input embedding
             centroid: Centroid vector
+        
         Returns:
             Similarity score
         """
@@ -78,15 +94,18 @@ class CentroidCalculator:
             centroid.reshape(1, -1)
         ))
 
-    def get_closest_vectors(self, embeddings: np.ndarray,
+    def get_closest_vectors(self, 
+                             embeddings: np.ndarray,
                              centroid: np.ndarray,
                              k: int = 5) -> List[int]:
         """
         Get indices of k closest vectors to centroid
+        
         Args:
             embeddings: Matrix of embeddings
             centroid: Centroid vector
             k: Number of closest vectors to return
+        
         Returns:
             Indices of closest vectors
         """
@@ -99,10 +118,12 @@ class CentroidCalculator:
 if __name__ == "__main__":
     # Test the centroid calculator
     from src.preprocessing.loader import DataLoader
+    from src.storage.db_manager import DatabaseManager
 
     # Initialize components
+    db_manager = DatabaseManager(config)
     loader = DataLoader()
-    centroid_calc = CentroidCalculator(config)
+    centroid_calc = CentroidCalculator(config, db_manager)
 
     # Load TRUE set embeddings from database
     true_embeddings = centroid_calc.load_true_embeddings()

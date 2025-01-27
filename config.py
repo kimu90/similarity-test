@@ -2,8 +2,8 @@ import os
 
 config = {
     'paths': {
-        'true_set_path': 'data/true_set.csv',
-        'new_texts_path': 'data/new_texts.csv',
+        'true_set_path': 'data/true_set/true_set.csv',
+        'new_texts_path': 'data/new_texts/new_texts.csv',
         'embeddings_output_dir': 'data/embeddings'
     },
     'database': {
