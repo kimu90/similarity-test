@@ -103,30 +103,22 @@ class TextClassifier:
     def store_classifications(self, classifications: List[ClassificationResult]):
         """
         Store classification results in database
-        
         Args:
             classifications: List of classification results
         """
-        try:
-            # Prepare results for database storage
-            results = [
-                {
-                    'text_id': result.text_id,
-                    'similarity': result.similarity_score,
-                    'confidence': result.confidence,
-                    'label': result.label
-                }
-                for result in classifications
-            ]
-            
-            # Store in database
-            self.db_manager.store_results(results)
-            
-            self.logger.info(f"Stored {len(results)} classification results")
+        # Prepare results for database storage
+        results = [
+            {
+                'text_id': result.text_id,
+                'similarity': float(result.similarity_score),  # Convert to Python float
+                'confidence': float(result.confidence),  # Convert to Python float
+                'label': bool(result.label)  # Ensure boolean
+            }
+            for result in classifications
+        ]
         
-        except Exception as e:
-            self.logger.error(f"Error storing classifications: {str(e)}")
-            raise
+        # Store in database
+        self.db_manager.store_results(results)
 
     def get_similarity_results(self, 
                                 min_score: float = 0.0, 

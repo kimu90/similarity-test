@@ -188,13 +188,6 @@ class SimilarityAnalyzer:
         return min(1.0, similarity_score / self.similarity_threshold)
 
     def store_results(self, new_text_ids: List[str], similarities: np.ndarray):
-        """
-        Store similarity results in database
-        
-        Args:
-            new_text_ids: List of new text identifiers
-            similarities: Similarity matrix
-        """
         try:
             # Lazy import to avoid circular dependency
             from src.analysis.classifier import TextClassifier
@@ -203,13 +196,13 @@ class SimilarityAnalyzer:
             max_similarities = similarities.max(axis=1)
             classifications = classifier.batch_classify(max_similarities, new_text_ids)
             
-            # Convert ClassificationResult to dictionary for storage
+            # Convert to dictionary for database storage
             results = [
                 {
                     'text_id': result.text_id,
-                    'similarity': result.similarity_score,
-                    'confidence': result.confidence,
-                    'label': result.label
+                    'similarity': float(result.similarity_score),  # Convert to Python float
+                    'confidence': float(result.confidence),  # Convert to Python float
+                    'label': bool(result.label)  # Ensure boolean
                 }
                 for result in classifications
             ]

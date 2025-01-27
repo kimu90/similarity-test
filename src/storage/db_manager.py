@@ -148,13 +148,13 @@ class DatabaseManager:
         """
         session = self.SessionLocal()
         try:
-            # Prepare data for bulk insert
+            # Prepare data for bulk insert, converting numpy types
             insert_data = [
                 {
                     'text_id': r['text_id'],
-                    'similarity_score': r['similarity'],
-                    'confidence': r['confidence'],
-                    'label': r['label']
+                    'similarity_score': float(r['similarity']),  # Convert to Python float
+                    'confidence': float(r['confidence']),  # Convert to Python float
+                    'label': bool(r['label'])  # Ensure boolean
                 }
                 for r in results
             ]
@@ -186,30 +186,29 @@ class DatabaseManager:
                          max_score: float = 1.0) -> pd.DataFrame:
         """
         Query classifications by similarity score
-        
-        Args:
-            min_score: Minimum similarity score
-            max_score: Maximum similarity score
-        
-        Returns:
-            DataFrame of classification results
         """
         try:
-            # Use parameterized query with explicit parameter placement
+            # Use a more robust query method
             query = """
                 SELECT * FROM classifications
-                WHERE similarity_score BETWEEN %s AND %s
+                WHERE similarity_score BETWEEN :min_score AND :max_score
                 ORDER BY similarity_score DESC
             """
-            return pd.read_sql(
-                query, 
-                self.engine, 
-                params=[min_score, max_score]
-            )
+            
+            # Use SQLAlchemy engine connection
+            with self.engine.connect() as connection:
+                return pd.read_sql(
+                    sa.text(query), 
+                    connection, 
+                    params={
+                        'min_score': min_score, 
+                        'max_score': max_score
+                    }
+                )
         except Exception as e:
             self.logger.error(f"Error querying similarities: {str(e)}")
-            # Re-raise or return an empty DataFrame
-            return pd.DataFrame()
+            # Return an empty DataFrame with the expected columns
+            return pd.DataFrame(columns=['text_id', 'similarity_score', 'confidence', 'label'])
 
     def get_true_embeddings(self) -> np.ndarray:
         """

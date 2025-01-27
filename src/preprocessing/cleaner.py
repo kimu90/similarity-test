@@ -15,7 +15,7 @@ class TextPreprocessor:
     def __init__(self, config: Dict):
         """Initialize with preprocessing config settings"""
         self.remove_stops = config.get('remove_stopwords', True)
-        self.min_length = config.get('min_length', 10)
+        self.min_length = config.get('min_length', 5)  # Reduced from 10 to 5
         
         # Setup logging
         self.logger = logging.getLogger(__name__)
@@ -86,10 +86,11 @@ class TextPreprocessor:
                 clean = self.clean_text(text)
                 
                 # Apply length filter
+                # Modify this to be less strict
                 if len(clean.split()) >= self.min_length:
                     cleaned.append(clean)
                 else:
-                    self.logger.info(f"Text too short after cleaning: {clean[:50]}...")
+                    self.logger.info(f"Text too short after cleaning (length {len(clean.split())}): {clean[:100]}...")
             except Exception as e:
                 self.logger.error(f"Error processing text: {str(e)}")
                 continue
@@ -104,8 +105,8 @@ class TextPreprocessor:
         # Remove HTML
         text = re.sub('<[^<]+?>', '', text)
         
-        # Remove special chars
-        text = re.sub('[^A-Za-z0-9\s]', '', text)
+        # Remove special chars, but keep some punctuation
+        text = re.sub(r'[^\w\s.,!?-]', '', text)
         
         # Remove extra whitespace
         text = ' '.join(text.split())
@@ -116,14 +117,18 @@ class TextPreprocessor:
         """Normalize case, numbers, etc"""
         text = text.lower()
         
-        # Convert numbers to words
+        # Convert numbers to a generic token instead of removing
         text = re.sub(r'\d+', 'NUM', text)
         
         return text
 
     def remove_stopwords(self, text: str) -> str:
         """Remove common stopwords"""
-        tokens = word_tokenize(text)
-        tokens = [t for t in tokens if t not in self.stops]
-        
-        return ' '.join(tokens)
+        try:
+            tokens = word_tokenize(text)
+            tokens = [t for t in tokens if t.lower() not in self.stops]
+            
+            return ' '.join(tokens)
+        except Exception as e:
+            self.logger.error(f"Error removing stopwords: {str(e)}")
+            return text
