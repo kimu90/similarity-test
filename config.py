@@ -1,24 +1,23 @@
-# config.py
-from pathlib import Path
-
-# Get base project directory
-BASE_DIR = Path(__file__).parent
-
-# Data paths
-DATA_DIR = BASE_DIR / 'data'
-TRUE_SET_DIR = DATA_DIR / 'true_set'
-NEW_TEXTS_DIR = DATA_DIR / 'new_texts'
+import os
 
 config = {
-   'paths': {
-       'true_set_path': TRUE_SET_DIR / 'true_set.csv',
-       'new_texts_path': NEW_TEXTS_DIR / 'new_texts.csv'
-   },
-   'data': {
-       'batch_size': 100,
-       'sample_size': {
-           'true_set': 100,
-           'new_texts': 1000
-       }
-   }
+    'paths': {
+        'true_set_path': 'data/true_set.csv',
+        'new_texts_path': 'data/new_texts.csv',
+        'embeddings_output_dir': 'data/embeddings'
+    },
+    'database': {
+        'dbname': 'similarity_db',
+        'user': 'user',
+        'password': 'password',
+        'host': 'db',
+        'port': 5432
+    },
+    'data': {
+        'batch_size': 100
+    },
+    'model_name': 'all-MiniLM-L6-v2',
+    'similarity_threshold': 0.8,
+    'threshold': 0.8,
+    'min_confidence': 0.6
 }
