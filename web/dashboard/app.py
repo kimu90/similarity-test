@@ -401,12 +401,25 @@ class DashboardApp:
 
     def process_new_data(self, batch_size: int, selected_metric: str):
         try:
+            # Load true set first to get total rows if not already set
+            true_df = self.loader.load_true_set()
+            
             status = self.db.get_processing_status()
+            
+            # If total_rows is 0, set it to the number of rows in the new texts
+            if status['total_rows'] == 0:
+                new_df = self.loader.load_new_texts(batch_size, resume=False)
+                total_rows = len(new_df)
+                
+                # Update processing status with total rows
+                self.db.update_processing_status(0, total_rows, 'in_progress')
+                
+                # Refresh status
+                status = self.db.get_processing_status()
+            
             progress_bar = st.progress(0)
             st.write(f"Starting from position: {status['offset']}/{status['total_rows']}")
             
-            # Load true set once
-            true_df = self.loader.load_true_set()
             cleaned_true = self.cleaner.batch_process(true_df['text'].tolist())
             true_embeddings = self.generator.batch_generate(
                 cleaned_true,
@@ -438,10 +451,18 @@ class DashboardApp:
                     
                     # Update progress
                     new_offset = status['offset'] + len(new_df)
-                    progress = min(new_offset / status['total_rows'], 1.0)
+                    progress = min(new_offset / max(status['total_rows'], 1), 1.0)
                     progress_bar.progress(progress)
                     
                     st.success(f"Processed {len(new_df)} documents ({new_offset}/{status['total_rows']} total)")
+                    
+                    # Update processing status
+                    if new_offset >= status['total_rows']:
+                        self.db.update_processing_status(
+                            new_offset,
+                            status['total_rows'],
+                            'completed'
+                        )
                 else:
                     st.info("All documents processed!")
                     self.db.update_processing_status(
