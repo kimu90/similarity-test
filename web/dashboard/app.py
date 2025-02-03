@@ -168,55 +168,44 @@ class DashboardApp:
         except Exception as e:
             st.error(f"Error showing top similar {metric} texts: {str(e)}")
     def show_comprehensive_report(self):
-        # Get metrics from recent batch processing
         batch_stats = self.db.get_batch_stats()
-        
-        # Collect unique metrics from batch stats
         processed_metrics = batch_stats['metric'].dropna().unique().tolist() if not batch_stats.empty else ['cosine']
         
-        # If no metrics found, default to cosine
         if not processed_metrics:
             processed_metrics = ['cosine']
         
         st.header("Comprehensive Similarity Analysis Reports")
         
         for metric in processed_metrics:
-            # Create a separate tab or section for each metric
             st.subheader(f"{metric.capitalize()} Similarity Report")
-            
-            # Get results for this specific metric
             results = self.db.query_by_similarity(metric=metric)
             
             if results.empty:
                 st.warning(f"No {metric} similarity results found.")
                 continue
             
-            # Processing Status Section
-            status = self.db.get_processing_status()
+            # Get status for specific metric
+            status = self.db.get_processing_status(metric=metric)
+            status['total_rows'] = 443249  # Fixed total documents
             
             col1, col2, col3 = st.columns(3)
             
             with col1:
                 st.metric("Total Documents", status['total_rows'])
-                st.metric("Processed Documents", status['offset'])
+                st.metric("Processed Documents", status['total_processed'])
             with col2:
-                if status['total_rows'] > 0:
-                    progress = (status['offset'] / status['total_rows']) * 100
-                    st.metric("Progress", f"{progress:.1f}%")
+                progress = (status['total_processed'] / status['total_rows']) * 100
+                st.metric("Progress", f"{progress:.1f}%")
                 st.metric("Status", status['status'].title())
             with col3:
-                st.metric("Remaining Documents", status['total_rows'] - status['offset'])
-                if status['batch_id']:
-                    st.metric("Current Batch", status['batch_id'])
+                st.metric("Remaining Documents", status['total_rows'] - status['total_processed'])
+                st.metric("Current Batch", status.get('current_batch', 'N/A'))
             
-            # Similarity Score Analysis
             data = results['similarity_score']
             
-            # Distribution Visualization
             col1, col2 = st.columns(2)
             
             with col1:
-                # Violin plot
                 fig_violin = go.Figure(data=go.Violin(
                     y=data,
                     name=metric.capitalize(),
@@ -230,7 +219,6 @@ class DashboardApp:
                 st.plotly_chart(fig_violin, use_container_width=True)
             
             with col2:
-                # Threshold analysis
                 thresholds = np.linspace(0, 1, 20)
                 ratios = [(data >= threshold).mean() for threshold in thresholds]
                 
@@ -247,7 +235,6 @@ class DashboardApp:
                 )
                 st.plotly_chart(fig_threshold, use_container_width=True)
             
-            # Detailed Statistics
             st.subheader("Detailed Statistics")
             stats = {
                 'Mean': data.mean(),
@@ -265,10 +252,8 @@ class DashboardApp:
             
             st.table(pd.DataFrame.from_dict(stats, orient='index', columns=[metric.capitalize()]))
             
-            # Export Options
             st.subheader("Export Options")
             
-            # Excel Export
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                 results.to_excel(writer, sheet_name=f'{metric}_details', index=False)
@@ -283,7 +268,6 @@ class DashboardApp:
                     mime="application/vnd.ms-excel"
                 )
             
-            # Divider between metrics
             st.markdown("---")
     def generate_summary_text(self, detailed_stats: Dict, correlation_matrix: pd.DataFrame) -> str:
         """Generate summary text report"""
@@ -350,10 +334,10 @@ class DashboardApp:
             col1, col2 = st.columns(2)
             with col1:
                 st.metric("Total Documents Processed", total_all_time)
-                st.metric("Documents Remaining", status['total_rows'] - status['offset'])
+                st.metric("Documents Remaining", status['total_rows'] - status['total_processed'])
             with col2:
                 if status['total_rows'] > 0:
-                    progress = (status['offset'] / status['total_rows']) * 100
+                    progress = (status['total_processed'] / status['total_rows']) * 100
                     st.metric("Progress", f"{progress:.1f}%")
                 st.metric("Processing Status", status['status'].title())
 
@@ -401,7 +385,7 @@ class DashboardApp:
                 status = self.db.get_processing_status(metric=selected_metric)
             
             progress_bar = st.progress(0)
-            st.write(f"Starting from position: {status['offset']}/{status['total_rows']}")
+            st.write(f"Starting from position: {status['total_processed']}/{status['total_rows']}")
             
             cleaned_true = self.cleaner.batch_process(true_df['text'].tolist())
             true_embeddings = self.generator.batch_generate(
@@ -432,15 +416,15 @@ class DashboardApp:
                         metric=selected_metric
                     )
                     
-                    new_offset = status['offset'] + len(new_df)
-                    progress = min(new_offset / max(status['total_rows'], 1), 1.0)
+                    new_total_processed = status['total_processed'] + len(new_df)
+                    progress = min(new_total_processed / max(status['total_rows'], 1), 1.0)
                     progress_bar.progress(progress)
                     
-                    st.success(f"Processed {len(new_df)} documents ({new_offset}/{status['total_rows']} total)")
+                    st.success(f"Processed {len(new_df)} documents ({new_total_processed}/{status['total_rows']} total)")
                     
-                    status_label = 'completed' if new_offset >= status['total_rows'] else 'in_progress'
+                    status_label = 'completed' if new_total_processed >= status['total_rows'] else 'in_progress'
                     self.db.update_processing_status(
-                        new_offset,
+                        new_total_processed,
                         status['total_rows'],
                         status_label,
                         metric=selected_metric
@@ -456,7 +440,7 @@ class DashboardApp:
                     
             except Exception as e:
                 self.db.update_processing_status(
-                    status['offset'],
+                    status['total_processed'],
                     status['total_rows'],
                     'failed',
                     metric=selected_metric
@@ -487,7 +471,7 @@ class DashboardApp:
                         'similarity_score',
                         'confidence',
                         'is_similar',
-                        'batch_id',
+                        'latest_batch_id',
                         'created_at'
                     ]].sort_values('created_at', ascending=False),
                     use_container_width=True,

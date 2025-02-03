@@ -54,7 +54,7 @@ class DatabaseManager:
                 sa.Column('text_id', sa.String),
                 sa.Column('embedding', sa.JSON),
                 sa.Column('is_true', sa.Boolean),
-                sa.Column('batch_id', sa.String),
+                sa.Column('latest_batch_id', sa.String),
                 sa.Column('metric', sa.String),
                 sa.Column('created_at', sa.DateTime, server_default=sa.func.now()),
                 sa.UniqueConstraint('text_id', 'metric', name='uix_text_metric')
@@ -69,7 +69,7 @@ class DatabaseManager:
                 sa.Column('metric', sa.String),
                 sa.Column('confidence', sa.Float),
                 sa.Column('label', sa.Boolean),
-                sa.Column('batch_id', sa.String),
+                sa.Column('latest_batch_id', sa.String),
                 sa.Column('created_at', sa.DateTime, server_default=sa.func.now()),
                 sa.UniqueConstraint('text_id', 'metric', 'created_at', name='uix_classification')
             )
@@ -78,9 +78,9 @@ class DatabaseManager:
             sa.Table(
                 'processing_tracker', metadata,
                 sa.Column('id', sa.Integer, primary_key=True),
-                sa.Column('last_processed_offset', sa.Integer, nullable=False, default=0),
+                sa.Column('last_processed_total_processed', sa.Integer, nullable=False, default=0),  # Corrected column definition
                 sa.Column('total_rows', sa.Integer, default=0),
-                sa.Column('batch_id', sa.String),
+                sa.Column('latest_batch_id', sa.String),
                 sa.Column('status', sa.String),
                 sa.Column('metric', sa.String),
                 sa.Column('created_at', sa.DateTime, server_default=sa.func.now()),
@@ -97,60 +97,65 @@ class DatabaseManager:
         except SQLAlchemyError as e:
             self.logger.error(f"Error initializing tables: {str(e)}")
             raise
-
     def get_processing_status(self, metric: Optional[str] = None) -> Dict:
         try:
             query = """
-                SELECT last_processed_offset, total_rows, status, batch_id, metric
+                SELECT 
+                    SUM(last_processed_total_processed) AS total_processed,
+                    SUM(total_rows) AS total_rows,
+                    MAX(status) AS status,
+                    MAX(latest_batch_id) AS latest_latest_batch_id,
+                    metric
                 FROM processing_tracker
-                WHERE metric = COALESCE(:metric, metric)
-                ORDER BY updated_at DESC LIMIT 1
+                WHERE metric = :metric
+                GROUP BY metric
+                ORDER BY MAX(updated_at) DESC
+                LIMIT 1
             """
             with self.engine.connect() as connection:
                 result = connection.execute(sa.text(query), {'metric': metric}).fetchone()
                 if result:
                     return {
-                        'offset': result[0] or 0,
+                        'total_processed': result[0] or 0,
                         'total_rows': result[1] or 0,
                         'status': result[2] or 'not_started',
-                        'batch_id': result[3],
+                        'latest_latest_batch_id': result[3],
                         'metric': result[4]
                     }
                 return {
-                    'offset': 0,
+                    'total_processed': 0,
                     'total_rows': 0,
                     'status': 'not_started',
-                    'batch_id': None,
+                    'latest_latest_batch_id': None,
                     'metric': metric
                 }
         except Exception as e:
             self.logger.error(f"Error getting processing status: {str(e)}")
             return {
-                'offset': 0,
-                'total_rows': 0, 
-                'status': 'failed',
-                'batch_id': None,
+                'total_processed': 0,
+                'total_rows': 0,
+                'status': 'failed', 
+                'latest_latest_batch_id': None,
                 'metric': metric
             }
-
-    def update_processing_status(self, offset: int, total_rows: int, status: str, metric: str):
+    def update_processing_status(self, total_processed: int, total_rows: int, status: str, metric: str):
         session = self.SessionLocal()
         try:
-            batch_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+            latest_batch_id = datetime.now().strftime('%Y%m%d_%H%M%S')
             
             query = """
                 INSERT INTO processing_tracker 
-                (last_processed_offset, total_rows, status, batch_id, metric)
-                VALUES (:offset, :total_rows, :status, :batch_id, :metric)
+                (last_processed_total_processed, total_rows, status, latest_batch_id, metric)
+                VALUES (:total_processed, :total_rows, :status, :latest_batch_id, :metric)
             """
             
             session.execute(
                 sa.text(query),
                 {
-                    'offset': max(offset, 0),
+                    'total_processed': max(total_processed, 0),
                     'total_rows': max(total_rows, 0),
                     'status': status or 'in_progress',
-                    'batch_id': batch_id,
+                    'latest_batch_id': latest_batch_id,
                     'metric': metric
                 }
             )
@@ -165,20 +170,20 @@ class DatabaseManager:
         try:
             query = """
                 SELECT 
-                    batch_id,
+                    latest_batch_id,
                     COUNT(DISTINCT text_id) as doc_count,
                     MIN(created_at) as batch_start,
                     MAX(created_at) as batch_end,
                     (SELECT DISTINCT metric FROM classifications 
-                     WHERE batch_id = combined_batches.batch_id LIMIT 1) as metric
+                     WHERE latest_batch_id = combined_batches.latest_batch_id LIMIT 1) as metric
                 FROM (
-                    SELECT text_id, batch_id, created_at, 'classifications' as source
+                    SELECT text_id, latest_batch_id, created_at, 'classifications' as source
                     FROM classifications
                     UNION
-                    SELECT text_id, batch_id, created_at, 'embeddings' as source
+                    SELECT text_id, latest_batch_id, created_at, 'embeddings' as source
                     FROM embeddings
                 ) combined_batches
-                GROUP BY batch_id
+                GROUP BY latest_batch_id
                 ORDER BY batch_start DESC
             """
             with self.engine.connect() as connection:
@@ -186,13 +191,13 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"Error getting batch stats: {str(e)}")
             return pd.DataFrame(columns=[
-                'batch_id', 'doc_count', 'batch_start', 'batch_end', 'metric'
+                'latest_batch_id', 'doc_count', 'batch_start', 'batch_end', 'metric'
             ])
 
     def store_embeddings(self, embeddings: np.ndarray, metadata: Dict[str, bool], metric: Optional[str] = None):
         session = self.SessionLocal()
         try:
-            batch_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+            latest_batch_id = datetime.now().strftime('%Y%m%d_%H%M%S')
             embedding_lists = [emb.tolist() for emb in embeddings]
             
             insert_data = [
@@ -200,7 +205,7 @@ class DatabaseManager:
                     'text_id': id,
                     'embedding': json.dumps(emb),
                     'is_true': is_true,
-                    'batch_id': batch_id,
+                    'latest_batch_id': latest_batch_id,
                     'metric': metric
                 }
                 for id, (emb, is_true) in zip(metadata['ids'], zip(embedding_lists, metadata['is_true']))
@@ -209,18 +214,18 @@ class DatabaseManager:
             session.execute(
                 sa.text("""
                     INSERT INTO embeddings 
-                    (text_id, embedding, is_true, batch_id, metric) 
-                    VALUES (:text_id, :embedding, :is_true, :batch_id, :metric)
+                    (text_id, embedding, is_true, latest_batch_id, metric) 
+                    VALUES (:text_id, :embedding, :is_true, :latest_batch_id, :metric)
                     ON CONFLICT (text_id, metric) DO UPDATE 
                     SET embedding = EXCLUDED.embedding,
                         is_true = EXCLUDED.is_true,
-                        batch_id = EXCLUDED.batch_id
+                        latest_batch_id = EXCLUDED.latest_batch_id
                 """),
                 insert_data
             )
             
             session.commit()
-            self.logger.info(f"Stored {len(insert_data)} embeddings in batch {batch_id}")
+            self.logger.info(f"Stored {len(insert_data)} embeddings in batch {latest_batch_id}")
             
         except Exception as e:
             session.rollback()
@@ -232,7 +237,7 @@ class DatabaseManager:
     def store_results(self, results: List[Dict]):
         session = self.SessionLocal()
         try:
-            batch_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+            latest_batch_id = datetime.now().strftime('%Y%m%d_%H%M%S')
             
             insert_data = [
                 {
@@ -241,7 +246,7 @@ class DatabaseManager:
                     'metric': r['metric'],
                     'confidence': float(r['confidence']),
                     'label': bool(r['label']),
-                    'batch_id': batch_id
+                    'latest_batch_id': latest_batch_id
                 }
                 for r in results
             ]
@@ -249,15 +254,15 @@ class DatabaseManager:
             session.execute(
                 sa.text("""
                     INSERT INTO classifications 
-                    (text_id, similarity_score, metric, confidence, label, batch_id)
-                    VALUES (:text_id, :similarity_score, :metric, :confidence, :label, :batch_id)
+                    (text_id, similarity_score, metric, confidence, label, latest_batch_id)
+                    VALUES (:text_id, :similarity_score, :metric, :confidence, :label, :latest_batch_id)
                     ON CONFLICT (text_id, metric, created_at) DO NOTHING
                 """),
                 insert_data
             )
             
             session.commit()
-            self.logger.info(f"Stored {len(insert_data)} classification results in batch {batch_id}")
+            self.logger.info(f"Stored {len(insert_data)} classification results in batch {latest_batch_id}")
             
         except Exception as e:
             session.rollback()
@@ -271,7 +276,7 @@ class DatabaseManager:
         try:
             base_query = """
                 SELECT 
-                    text_id, similarity_score, metric, confidence, label, batch_id, created_at
+                    text_id, similarity_score, metric, confidence, label, latest_batch_id, created_at
                 FROM classifications
                 WHERE metric = :metric
                 AND similarity_score BETWEEN :min_score AND :max_score
@@ -302,7 +307,7 @@ class DatabaseManager:
             self.logger.error(f"Error querying similarities: {str(e)}")
             return pd.DataFrame(columns=[
                 'text_id', 'similarity_score', 'metric',
-                'confidence', 'label', 'batch_id', 'created_at'
+                'confidence', 'label', 'latest_batch_id', 'created_at'
             ])
 
     def get_total_processed_count(self) -> int:
