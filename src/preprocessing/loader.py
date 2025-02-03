@@ -29,17 +29,17 @@ class DataLoader:
     def get_total_rows(self) -> int:
         return sum(1 for _ in pd.read_csv(self.new_texts_path, chunksize=10000))
 
-    def load_new_texts(self, batch_size: Optional[int] = None, resume: bool = True) -> pd.DataFrame:
+    def load_new_texts(self, batch_size: int, resume: bool, selected_metric: str):
         try:
             batch_size = batch_size or self.batch_size
             
-            # Get processing status
-            status = self.db.get_processing_status()
+            # Get processing status for the selected metric
+            status = self.db.get_processing_status(metric=selected_metric)
             offset = status['offset'] if resume else 0
             
             if offset == 0 or not resume:
                 total_rows = self.get_total_rows()
-                self.db.update_processing_status(0, total_rows, 'in_progress')
+                self.db.update_processing_status(0, total_rows, 'in_progress', metric=selected_metric)
             
             self.logger.info(f"Loading new texts from {self.new_texts_path}, offset: {offset}")
             
@@ -53,12 +53,13 @@ class DataLoader:
             df = self.clean_column_names(df)
             
             if self.validate_data(df):
-                # Update processing status
+                # Update processing status for the selected metric
                 new_offset = offset + len(df)
                 self.db.update_processing_status(
                     new_offset,
                     status['total_rows'],
-                    'completed' if new_offset >= status['total_rows'] else 'in_progress'
+                    'completed' if new_offset >= status['total_rows'] else 'in_progress',
+                    metric=selected_metric
                 )
                 
                 self.logger.info(f"Loaded batch of {len(df)} records. Progress: {new_offset}/{status['total_rows']}")
@@ -67,7 +68,7 @@ class DataLoader:
                 raise ValueError("New texts validation failed")
                 
         except Exception as e:
-            self.db.update_processing_status(offset, status['total_rows'], 'failed')
+            self.db.update_processing_status(offset, status['total_rows'], 'failed', metric=selected_metric)
             self.logger.error(f"Error loading new texts: {str(e)}")
             raise
 

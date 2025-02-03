@@ -145,6 +145,11 @@ class SimilarityAnalyzer:
             import pandas as pd
             df = pd.read_sql(query, self.db_manager.engine)
             
+            # Handle case where no true embeddings exist
+            if df.empty:
+                self.logger.warning("No true embeddings found in database")
+                return np.array([]), []
+            
             # Convert embeddings to numpy array
             embeddings = np.stack(df['embedding'].apply(np.array).values)
             text_ids = df['text_id'].tolist()
@@ -152,7 +157,7 @@ class SimilarityAnalyzer:
             return embeddings, text_ids
         except Exception as e:
             self.logger.error(f"Error retrieving TRUE embeddings: {str(e)}")
-            raise
+            return np.array([]), []
 
     def get_new_embeddings_with_ids(self) -> Tuple[np.ndarray, List[str]]:
         """
@@ -170,6 +175,11 @@ class SimilarityAnalyzer:
             import pandas as pd
             df = pd.read_sql(query, self.db_manager.engine)
             
+            # Handle case where no new embeddings exist
+            if df.empty:
+                self.logger.warning("No new embeddings found in database")
+                return np.array([]), []
+            
             # Convert embeddings to numpy array
             embeddings = np.stack(df['embedding'].apply(np.array).values)
             text_ids = df['text_id'].tolist()
@@ -177,7 +187,7 @@ class SimilarityAnalyzer:
             return embeddings, text_ids
         except Exception as e:
             self.logger.error(f"Error retrieving new embeddings: {str(e)}")
-            raise
+            return np.array([]), []
 
     def batch_similarities(self, new_vecs: np.ndarray, true_vecs: np.ndarray, metric: str = 'cosine') -> np.ndarray:
         """

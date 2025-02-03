@@ -47,18 +47,20 @@ class DatabaseManager:
         try:
             metadata = sa.MetaData()
             
-            # Embeddings table
+            # Embeddings table with composite unique constraint
             sa.Table(
                 'embeddings', metadata,
                 sa.Column('id', sa.Integer, primary_key=True),
-                sa.Column('text_id', sa.String, unique=True),
+                sa.Column('text_id', sa.String),
                 sa.Column('embedding', sa.JSON),
                 sa.Column('is_true', sa.Boolean),
                 sa.Column('batch_id', sa.String),
-                sa.Column('created_at', sa.DateTime, server_default=sa.func.now())
+                sa.Column('metric', sa.String),
+                sa.Column('created_at', sa.DateTime, server_default=sa.func.now()),
+                sa.UniqueConstraint('text_id', 'metric', name='uix_text_metric')
             )
             
-            # Classifications table
+            # Classifications table with composite unique constraint
             sa.Table(
                 'classifications', metadata,
                 sa.Column('id', sa.Integer, primary_key=True),
@@ -68,9 +70,10 @@ class DatabaseManager:
                 sa.Column('confidence', sa.Float),
                 sa.Column('label', sa.Boolean),
                 sa.Column('batch_id', sa.String),
-                sa.Column('created_at', sa.DateTime, server_default=sa.func.now())
+                sa.Column('created_at', sa.DateTime, server_default=sa.func.now()),
+                sa.UniqueConstraint('text_id', 'metric', 'created_at', name='uix_classification')
             )
-
+            
             # Processing tracker table
             sa.Table(
                 'processing_tracker', metadata,
@@ -79,9 +82,14 @@ class DatabaseManager:
                 sa.Column('total_rows', sa.Integer, default=0),
                 sa.Column('batch_id', sa.String),
                 sa.Column('status', sa.String),
+                sa.Column('metric', sa.String),
                 sa.Column('created_at', sa.DateTime, server_default=sa.func.now()),
                 sa.Column('updated_at', sa.DateTime, server_default=sa.func.now(), onupdate=sa.func.now())
             )
+            
+            # Create indexes for performance
+            sa.Index('idx_classifications_metric', 'metric')
+            sa.Index('idx_classifications_text_id', 'text_id')
             
             metadata.create_all(self.engine)
             self.logger.info("Database tables initialized successfully")
@@ -90,43 +98,60 @@ class DatabaseManager:
             self.logger.error(f"Error initializing tables: {str(e)}")
             raise
 
-    def get_processing_status(self) -> Dict:
+    def get_processing_status(self, metric: Optional[str] = None) -> Dict:
         try:
             query = """
-                SELECT last_processed_offset, total_rows, status, batch_id 
-                FROM processing_tracker 
+                SELECT last_processed_offset, total_rows, status, batch_id, metric
+                FROM processing_tracker
+                WHERE metric = COALESCE(:metric, metric)
                 ORDER BY updated_at DESC LIMIT 1
             """
             with self.engine.connect() as connection:
-                result = connection.execute(sa.text(query)).fetchone()
+                result = connection.execute(sa.text(query), {'metric': metric}).fetchone()
                 if result:
                     return {
                         'offset': result[0] or 0,
                         'total_rows': result[1] or 0,
                         'status': result[2] or 'not_started',
-                        'batch_id': result[3]
+                        'batch_id': result[3],
+                        'metric': result[4]
                     }
-                # Default safe return if no records exist
-                return {'offset': 0, 'total_rows': 0, 'status': 'not_started', 'batch_id': None}
+                return {
+                    'offset': 0,
+                    'total_rows': 0,
+                    'status': 'not_started',
+                    'batch_id': None,
+                    'metric': metric
+                }
         except Exception as e:
             self.logger.error(f"Error getting processing status: {str(e)}")
-            return {'offset': 0, 'total_rows': 0, 'status': 'failed', 'batch_id': None}
+            return {
+                'offset': 0,
+                'total_rows': 0, 
+                'status': 'failed',
+                'batch_id': None,
+                'metric': metric
+            }
 
-    def update_processing_status(self, offset: int, total_rows: int, status: str):
+    def update_processing_status(self, offset: int, total_rows: int, status: str, metric: str):
         session = self.SessionLocal()
         try:
             batch_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+            
+            query = """
+                INSERT INTO processing_tracker 
+                (last_processed_offset, total_rows, status, batch_id, metric)
+                VALUES (:offset, :total_rows, :status, :batch_id, :metric)
+            """
+            
             session.execute(
-                sa.text("""
-                    INSERT INTO processing_tracker 
-                    (last_processed_offset, total_rows, status, batch_id) 
-                    VALUES (:offset, :total_rows, :status, :batch_id)
-                """),
+                sa.text(query),
                 {
                     'offset': max(offset, 0),
                     'total_rows': max(total_rows, 0),
                     'status': status or 'in_progress',
-                    'batch_id': batch_id
+                    'batch_id': batch_id,
+                    'metric': metric
                 }
             )
             session.commit()
@@ -136,7 +161,6 @@ class DatabaseManager:
             raise
         finally:
             session.close()
-
     def get_batch_stats(self) -> pd.DataFrame:
         try:
             query = """
@@ -144,12 +168,14 @@ class DatabaseManager:
                     batch_id,
                     COUNT(DISTINCT text_id) as doc_count,
                     MIN(created_at) as batch_start,
-                    MAX(created_at) as batch_end
+                    MAX(created_at) as batch_end,
+                    (SELECT DISTINCT metric FROM classifications 
+                     WHERE batch_id = combined_batches.batch_id LIMIT 1) as metric
                 FROM (
-                    SELECT text_id, batch_id, created_at 
-                    FROM classifications 
-                    UNION 
-                    SELECT text_id, batch_id, created_at 
+                    SELECT text_id, batch_id, created_at, 'classifications' as source
+                    FROM classifications
+                    UNION
+                    SELECT text_id, batch_id, created_at, 'embeddings' as source
                     FROM embeddings
                 ) combined_batches
                 GROUP BY batch_id
@@ -159,13 +185,11 @@ class DatabaseManager:
                 return pd.read_sql(sa.text(query), connection)
         except Exception as e:
             self.logger.error(f"Error getting batch stats: {str(e)}")
-            # Return an empty DataFrame with expected columns
             return pd.DataFrame(columns=[
-                'batch_id', 'doc_count', 'batch_start', 'batch_end'
+                'batch_id', 'doc_count', 'batch_start', 'batch_end', 'metric'
             ])
 
-
-    def store_embeddings(self, embeddings: np.ndarray, metadata: Dict[str, bool]):
+    def store_embeddings(self, embeddings: np.ndarray, metadata: Dict[str, bool], metric: Optional[str] = None):
         session = self.SessionLocal()
         try:
             batch_id = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -176,16 +200,18 @@ class DatabaseManager:
                     'text_id': id,
                     'embedding': json.dumps(emb),
                     'is_true': is_true,
-                    'batch_id': batch_id
+                    'batch_id': batch_id,
+                    'metric': metric
                 }
                 for id, (emb, is_true) in zip(metadata['ids'], zip(embedding_lists, metadata['is_true']))
             ]
             
             session.execute(
                 sa.text("""
-                    INSERT INTO embeddings (text_id, embedding, is_true, batch_id) 
-                    VALUES (:text_id, :embedding, :is_true, :batch_id)
-                    ON CONFLICT (text_id) DO UPDATE 
+                    INSERT INTO embeddings 
+                    (text_id, embedding, is_true, batch_id, metric) 
+                    VALUES (:text_id, :embedding, :is_true, :batch_id, :metric)
+                    ON CONFLICT (text_id, metric) DO UPDATE 
                     SET embedding = EXCLUDED.embedding,
                         is_true = EXCLUDED.is_true,
                         batch_id = EXCLUDED.batch_id
@@ -225,6 +251,7 @@ class DatabaseManager:
                     INSERT INTO classifications 
                     (text_id, similarity_score, metric, confidence, label, batch_id)
                     VALUES (:text_id, :similarity_score, :metric, :confidence, :label, :batch_id)
+                    ON CONFLICT (text_id, metric, created_at) DO NOTHING
                 """),
                 insert_data
             )
@@ -240,7 +267,7 @@ class DatabaseManager:
             session.close()
 
     def query_by_similarity(self, min_score: float = 0.0, max_score: float = 1.0,
-                          metric: str = 'cosine', latest_only: bool = False) -> pd.DataFrame:
+                             metric: str = 'cosine', latest_only: bool = False) -> pd.DataFrame:
         try:
             base_query = """
                 SELECT 
@@ -252,11 +279,11 @@ class DatabaseManager:
             
             if latest_only:
                 query = base_query + """
-                    AND (text_id, created_at) IN (
-                        SELECT text_id, MAX(created_at)
+                    AND (text_id, metric, created_at) IN (
+                        SELECT text_id, metric, MAX(created_at)
                         FROM classifications
                         WHERE metric = :metric
-                        GROUP BY text_id
+                        GROUP BY text_id, metric
                     )
                 """
             else:
@@ -265,25 +292,18 @@ class DatabaseManager:
             query += " ORDER BY created_at DESC, similarity_score DESC"
             
             with self.engine.connect() as connection:
-                df = pd.read_sql(
+                return pd.read_sql(
                     sa.text(query), 
                     connection, 
                     params={'metric': metric, 'min_score': min_score, 'max_score': max_score}
                 )
                 
-                if 'similarity_score' in df.columns:
-                    df[f'{metric}_score'] = df['similarity_score']
-                
-                return df
-                
         except Exception as e:
             self.logger.error(f"Error querying similarities: {str(e)}")
             return pd.DataFrame(columns=[
-                'text_id', 'similarity_score', f'{metric}_score',
-                'metric', 'confidence', 'label', 'batch_id', 'created_at'
+                'text_id', 'similarity_score', 'metric',
+                'confidence', 'label', 'batch_id', 'created_at'
             ])
-
-   
 
     def get_total_processed_count(self) -> int:
         try:
@@ -294,8 +314,6 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"Error getting total count: {str(e)}")
             return 0
-
-    
 
     def get_true_embeddings(self) -> np.ndarray:
         try:
