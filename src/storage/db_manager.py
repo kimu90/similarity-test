@@ -13,8 +13,11 @@ import json
 from datetime import datetime
 
 class DatabaseManager:
-    def __init__(self, config: Dict):
+    def __init__(self, config=None):
         try:
+            if config is None:
+                from config import config
+
             db_url = (
                 f"postgresql://{config['database']['user']}:"
                 f"{config['database']['password']}@"
@@ -44,7 +47,7 @@ class DatabaseManager:
         try:
             metadata = sa.MetaData()
             
-            # Updated embeddings table with batch tracking
+            # Embeddings table
             sa.Table(
                 'embeddings', metadata,
                 sa.Column('id', sa.Integer, primary_key=True),
@@ -55,7 +58,7 @@ class DatabaseManager:
                 sa.Column('created_at', sa.DateTime, server_default=sa.func.now())
             )
             
-            # Updated classifications table with batch tracking
+            # Classifications table
             sa.Table(
                 'classifications', metadata,
                 sa.Column('id', sa.Integer, primary_key=True),
@@ -67,6 +70,18 @@ class DatabaseManager:
                 sa.Column('batch_id', sa.String),
                 sa.Column('created_at', sa.DateTime, server_default=sa.func.now())
             )
+
+            # Processing tracker table
+            sa.Table(
+                'processing_tracker', metadata,
+                sa.Column('id', sa.Integer, primary_key=True),
+                sa.Column('last_processed_offset', sa.Integer, nullable=False, default=0),
+                sa.Column('total_rows', sa.Integer, default=0),
+                sa.Column('batch_id', sa.String),
+                sa.Column('status', sa.String),
+                sa.Column('created_at', sa.DateTime, server_default=sa.func.now()),
+                sa.Column('updated_at', sa.DateTime, server_default=sa.func.now(), onupdate=sa.func.now())
+            )
             
             metadata.create_all(self.engine)
             self.logger.info("Database tables initialized successfully")
@@ -74,6 +89,81 @@ class DatabaseManager:
         except SQLAlchemyError as e:
             self.logger.error(f"Error initializing tables: {str(e)}")
             raise
+
+    def get_processing_status(self) -> Dict:
+        try:
+            query = """
+                SELECT last_processed_offset, total_rows, status, batch_id 
+                FROM processing_tracker 
+                ORDER BY updated_at DESC LIMIT 1
+            """
+            with self.engine.connect() as connection:
+                result = connection.execute(sa.text(query)).fetchone()
+                if result:
+                    return {
+                        'offset': result[0] or 0,
+                        'total_rows': result[1] or 0,
+                        'status': result[2] or 'not_started',
+                        'batch_id': result[3]
+                    }
+                # Default safe return if no records exist
+                return {'offset': 0, 'total_rows': 0, 'status': 'not_started', 'batch_id': None}
+        except Exception as e:
+            self.logger.error(f"Error getting processing status: {str(e)}")
+            return {'offset': 0, 'total_rows': 0, 'status': 'failed', 'batch_id': None}
+
+    def update_processing_status(self, offset: int, total_rows: int, status: str):
+        session = self.SessionLocal()
+        try:
+            batch_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+            session.execute(
+                sa.text("""
+                    INSERT INTO processing_tracker 
+                    (last_processed_offset, total_rows, status, batch_id) 
+                    VALUES (:offset, :total_rows, :status, :batch_id)
+                """),
+                {
+                    'offset': max(offset, 0),
+                    'total_rows': max(total_rows, 0),
+                    'status': status or 'in_progress',
+                    'batch_id': batch_id
+                }
+            )
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            self.logger.error(f"Error updating processing status: {str(e)}")
+            raise
+        finally:
+            session.close()
+
+    def get_batch_stats(self) -> pd.DataFrame:
+        try:
+            query = """
+                SELECT 
+                    batch_id,
+                    COUNT(DISTINCT text_id) as doc_count,
+                    MIN(created_at) as batch_start,
+                    MAX(created_at) as batch_end
+                FROM (
+                    SELECT text_id, batch_id, created_at 
+                    FROM classifications 
+                    UNION 
+                    SELECT text_id, batch_id, created_at 
+                    FROM embeddings
+                ) combined_batches
+                GROUP BY batch_id
+                ORDER BY batch_start DESC
+            """
+            with self.engine.connect() as connection:
+                return pd.read_sql(sa.text(query), connection)
+        except Exception as e:
+            self.logger.error(f"Error getting batch stats: {str(e)}")
+            # Return an empty DataFrame with expected columns
+            return pd.DataFrame(columns=[
+                'batch_id', 'doc_count', 'batch_start', 'batch_end'
+            ])
+
 
     def store_embeddings(self, embeddings: np.ndarray, metadata: Dict[str, bool]):
         session = self.SessionLocal()
@@ -130,7 +220,6 @@ class DatabaseManager:
                 for r in results
             ]
             
-            # Now we append instead of update
             session.execute(
                 sa.text("""
                     INSERT INTO classifications 
@@ -150,21 +239,12 @@ class DatabaseManager:
         finally:
             session.close()
 
-    def query_by_similarity(self, 
-                          min_score: float = 0.0, 
-                          max_score: float = 1.0,
-                          metric: str = 'cosine',
-                          latest_only: bool = False) -> pd.DataFrame:
+    def query_by_similarity(self, min_score: float = 0.0, max_score: float = 1.0,
+                          metric: str = 'cosine', latest_only: bool = False) -> pd.DataFrame:
         try:
             base_query = """
                 SELECT 
-                    text_id,
-                    similarity_score,
-                    metric,
-                    confidence,
-                    label,
-                    batch_id,
-                    created_at
+                    text_id, similarity_score, metric, confidence, label, batch_id, created_at
                 FROM classifications
                 WHERE metric = :metric
                 AND similarity_score BETWEEN :min_score AND :max_score
@@ -188,11 +268,7 @@ class DatabaseManager:
                 df = pd.read_sql(
                     sa.text(query), 
                     connection, 
-                    params={
-                        'metric': metric,
-                        'min_score': min_score, 
-                        'max_score': max_score
-                    }
+                    params={'metric': metric, 'min_score': min_score, 'max_score': max_score}
                 )
                 
                 if 'similarity_score' in df.columns:
@@ -203,18 +279,13 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"Error querying similarities: {str(e)}")
             return pd.DataFrame(columns=[
-                'text_id', 
-                'similarity_score', 
-                f'{metric}_score',
-                'metric', 
-                'confidence', 
-                'label',
-                'batch_id',
-                'created_at'
+                'text_id', 'similarity_score', f'{metric}_score',
+                'metric', 'confidence', 'label', 'batch_id', 'created_at'
             ])
 
+   
+
     def get_total_processed_count(self) -> int:
-        """Get total number of unique documents processed"""
         try:
             query = "SELECT COUNT(DISTINCT text_id) FROM classifications"
             with self.engine.connect() as connection:
@@ -224,32 +295,13 @@ class DatabaseManager:
             self.logger.error(f"Error getting total count: {str(e)}")
             return 0
 
-    def get_batch_stats(self) -> pd.DataFrame:
-        """Get statistics by batch"""
-        try:
-            query = """
-                SELECT 
-                    batch_id,
-                    COUNT(DISTINCT text_id) as doc_count,
-                    MIN(created_at) as batch_start,
-                    MAX(created_at) as batch_end
-                FROM classifications
-                GROUP BY batch_id
-                ORDER BY MIN(created_at) DESC
-            """
-            with self.engine.connect() as connection:
-                return pd.read_sql(sa.text(query), connection)
-        except Exception as e:
-            self.logger.error(f"Error getting batch stats: {str(e)}")
-            return pd.DataFrame()
+    
 
     def get_true_embeddings(self) -> np.ndarray:
         try:
             query = "SELECT embedding FROM embeddings WHERE is_true = True"
             df = pd.read_sql(query, self.engine)
-            return np.array([
-                np.array(json.loads(emb)) for emb in df['embedding']
-            ])
+            return np.array([np.array(json.loads(emb)) for emb in df['embedding']])
         except Exception as e:
             self.logger.error(f"Error retrieving TRUE embeddings: {str(e)}")
             raise
@@ -260,39 +312,3 @@ class DatabaseManager:
             self.logger.info("Database connection closed")
         except Exception as e:
             self.logger.error(f"Error closing database connection: {str(e)}")
-
-if __name__ == "__main__":
-    from config import config
-    db_manager = DatabaseManager(config)
-    
-    # Test embedding storage
-    test_embeddings = np.random.rand(5, 10)
-    test_metadata = {
-        'ids': [f'test_{i}' for i in range(5)],
-        'is_true': [True] * 5
-    }
-    db_manager.store_embeddings(test_embeddings, test_metadata)
-    
-    # Test classification storage
-    test_results = [
-        {
-            'text_id': f'test_{i}',
-            'similarity_score': float(np.random.rand()),
-            'metric': 'cosine',
-            'confidence': float(np.random.rand()),
-            'label': bool(np.random.choice([True, False]))
-        }
-        for i in range(5)
-    ]
-    db_manager.store_results(test_results)
-    
-    # Test querying
-    results = db_manager.query_by_similarity(metric='cosine')
-    print("\nQuery Results:")
-    print(results)
-    
-    print("\nTotal processed count:", db_manager.get_total_processed_count())
-    print("\nBatch statistics:")
-    print(db_manager.get_batch_stats())
-    
-    db_manager.close_connection()

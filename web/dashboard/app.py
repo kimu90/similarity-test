@@ -127,72 +127,6 @@ class DashboardApp:
             print(f"Error computing correlation matrix: {e}")
             return None
 
-    def process_new_data(self, batch_size: int, selected_metric: str):
-        """Process new batch of data"""
-        try:
-            # Load data
-            true_df = self.loader.load_true_set()
-            new_df = self.loader.load_new_texts(batch_size)
-            
-            # Log original data
-            st.write(f"TRUE set size: {len(true_df)}")
-            st.write(f"New texts size: {len(new_df)}")
-            
-            # Print first few rows of new_df to inspect
-            st.write("First few rows of new texts:")
-            st.dataframe(new_df.head())
-            
-            # Clean texts
-            cleaned_true = self.cleaner.batch_process(true_df['text'].tolist())
-            cleaned_new = self.cleaner.batch_process(new_df['text'].tolist())
-            
-            # Log cleaned text sizes
-            st.write(f"Cleaned TRUE set size: {len(cleaned_true)}")
-            st.write(f"Cleaned new texts size: {len(cleaned_new)}")
-            
-            if not cleaned_new:
-                st.error("No new texts remained after cleaning. Check cleaning criteria.")
-                return
-            
-            # Generate and store embeddings
-            true_embeddings = self.generator.batch_generate(
-                cleaned_true, 
-                true_df['lens_id'].tolist(),
-                is_true_set=True
-            )
-            new_embeddings = self.generator.batch_generate(
-                cleaned_new, 
-                new_df['lens_id'].tolist(),
-                is_true_set=False
-            )
-            
-            # Log embedding sizes
-            st.write(f"TRUE embeddings shape: {true_embeddings.shape}")
-            st.write(f"New embeddings shape: {new_embeddings.shape}")
-            
-            # Calculate similarities for selected metric only
-            similarities = self.similarity.batch_similarities(
-                new_embeddings, 
-                true_embeddings,
-                metric=selected_metric
-            )
-            
-            # Log similarities
-            st.write(f"{selected_metric.capitalize()} similarities shape: {similarities.shape}")
-            
-            # Store results for selected metric
-            self.similarity.store_results(
-                new_df['lens_id'].tolist(), 
-                similarities,
-                metric=selected_metric
-            )
-            
-            st.success(f"Processed {len(new_df)} new texts successfully!")
-            
-        except Exception as e:
-            st.error(f"Error processing data: {str(e)}")
-            st.error("Detailed Traceback:")
-            st.code(traceback.format_exc())
 
     def show_similarity_distribution(self, threshold: float, metric: str):
         """Display similarity score distribution"""
@@ -231,32 +165,28 @@ class DashboardApp:
             st.error(f"Error showing top similar texts: {str(e)}")
 
     def show_comprehensive_report(self):
-        """Generate comprehensive analysis report"""
         correlation_matrix = self.compute_correlation_matrix()
         st.header("Comprehensive Similarity Analysis Report")
         
-        # Overall Statistics Section
-        total_processed = self.db.get_total_processed_count()
+        # Processing Status Section
+        status = self.db.get_processing_status()
         batch_stats = self.db.get_batch_stats()
-        true_embeddings, true_ids = self.similarity.get_true_embeddings_with_ids()
         
-        st.metric("Total Documents Processed (Cumulative)", total_processed, 
-                help="Total number of documents processed across all batches")
-                
-        # Document Statistics Section
-        st.subheader("1. Document Statistics")
+        st.subheader("Processing Status")
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            st.metric("Reference Documents", len(true_embeddings))
-            if not batch_stats.empty:
-                st.metric("Documents by Batch Sum", batch_stats['doc_count'].sum())
+            st.metric("Total Documents", status['total_rows'])
+            st.metric("Processed Documents", status['offset'])
         with col2:
-            st.metric("Embedding Dimension", true_embeddings.shape[1])
-            st.metric("Number of Batches", len(batch_stats))
+            if status['total_rows'] > 0:
+                progress = (status['offset'] / status['total_rows']) * 100
+                st.metric("Progress", f"{progress:.1f}%")
+            st.metric("Status", status['status'].title())
         with col3:
-            st.metric("Total Documents", total_processed + len(true_embeddings))
-            st.metric("Processing Time", f"{time.time() - self.start_time:.2f}s")
+            st.metric("Remaining Documents", status['total_rows'] - status['offset'])
+            if status['batch_id']:
+                st.metric("Current Batch", status['batch_id'])
 
         # Batch History
         st.subheader("Batch Processing History")
@@ -425,31 +355,36 @@ class DashboardApp:
                 file_name="summary_report.txt",
                 mime="text/plain"
             )
-
     def show_classification_metrics(self, threshold: float, metric: str):
-        """Display classification metrics"""
         try:
+            # Get processing status
+            status = self.db.get_processing_status()
             total_all_time = self.db.get_total_processed_count()
             current_results = self.db.query_by_similarity(metric=metric, latest_only=True)
             batch_stats = self.db.get_batch_stats()
-            
-            # Display cumulative metrics
-            st.subheader("Cumulative Statistics")
+
+            # Processing Progress Section
+            st.subheader("Processing Progress")
             col1, col2 = st.columns(2)
-            
             with col1:
-                st.metric("Total Documents Processed (All Time)", total_all_time)
-                if not batch_stats.empty:
-                    st.metric("Total Batches", len(batch_stats))
-            
+                st.metric("Total Documents Processed", total_all_time)
+                st.metric("Documents Remaining", status['total_rows'] - status['offset'])
             with col2:
-                if not batch_stats.empty:
-                    st.metric("Last Batch Size", batch_stats.iloc[0]['doc_count'])
-                    st.metric("Last Batch Date", batch_stats.iloc[0]['batch_end'].strftime('%Y-%m-%d %H:%M'))
+                if status['total_rows'] > 0:
+                    progress = (status['offset'] / status['total_rows']) * 100
+                    st.metric("Progress", f"{progress:.1f}%")
+                st.metric("Processing Status", status['status'].title())
+
+            # Batch Statistics
+            st.subheader("Batch Statistics")
+            if not batch_stats.empty:
+                st.metric("Total Batches", len(batch_stats))
+                st.metric("Last Batch Size", batch_stats.iloc[0]['doc_count'])
+                st.metric("Last Batch Date", batch_stats.iloc[0]['batch_end'].strftime('%Y-%m-%d %H:%M'))
             
-            # Current batch metrics
-            st.subheader("Current Analysis")
+            # Similarity Metrics
             if not current_results.empty:
+                st.subheader("Similarity Analysis")
                 predictions = current_results['similarity_score'] >= threshold
                 metrics = {
                     "Similar Texts": sum(predictions),
@@ -461,10 +396,73 @@ class DashboardApp:
                 cols = st.columns(len(metrics))
                 for col, (metric_name, value) in zip(cols, metrics.items()):
                     col.metric(metric_name, f"{value:.2f}")
-            else:
-                st.warning("No classification data available. Load data first.")
         except Exception as e:
             st.error(f"Error showing metrics: {str(e)}")
+
+    def process_new_data(self, batch_size: int, selected_metric: str):
+        try:
+            status = self.db.get_processing_status()
+            progress_bar = st.progress(0)
+            st.write(f"Starting from position: {status['offset']}/{status['total_rows']}")
+            
+            # Load true set once
+            true_df = self.loader.load_true_set()
+            cleaned_true = self.cleaner.batch_process(true_df['text'].tolist())
+            true_embeddings = self.generator.batch_generate(
+                cleaned_true,
+                true_df['lens_id'].tolist(),
+                is_true_set=True
+            )
+            
+            try:
+                new_df = self.loader.load_new_texts(batch_size, resume=True)
+                if not new_df.empty:
+                    cleaned_new = self.cleaner.batch_process(new_df['text'].tolist())
+                    new_embeddings = self.generator.batch_generate(
+                        cleaned_new,
+                        new_df['lens_id'].tolist(),
+                        is_true_set=False
+                    )
+                    
+                    similarities = self.similarity.batch_similarities(
+                        new_embeddings,
+                        true_embeddings,
+                        metric=selected_metric
+                    )
+                    
+                    self.similarity.store_results(
+                        new_df['lens_id'].tolist(),
+                        similarities,
+                        metric=selected_metric
+                    )
+                    
+                    # Update progress
+                    new_offset = status['offset'] + len(new_df)
+                    progress = min(new_offset / status['total_rows'], 1.0)
+                    progress_bar.progress(progress)
+                    
+                    st.success(f"Processed {len(new_df)} documents ({new_offset}/{status['total_rows']} total)")
+                else:
+                    st.info("All documents processed!")
+                    self.db.update_processing_status(
+                        status['total_rows'],
+                        status['total_rows'],
+                        'completed'
+                    )
+                    
+            except Exception as e:
+                # Save last successful position
+                self.db.update_processing_status(
+                    status['offset'],
+                    status['total_rows'],
+                    'failed'
+                )
+                raise e
+                
+        except Exception as e:
+            st.error(f"Error processing data: {str(e)}")
+            st.error("Detailed Traceback:")
+            st.code(traceback.format_exc())
 
 
     def show_results_table(self, threshold: float, metric: str):

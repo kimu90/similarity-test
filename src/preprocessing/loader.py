@@ -7,24 +7,69 @@ from typing import List, Dict, Optional, Tuple
 import logging
 from config import config
 
+# Import DatabaseManager from the second file
+from src.storage.db_manager import DatabaseManager
+
 class DataLoader:
     def __init__(self):
-        """Initialize DataLoader with paths from config"""
         self.true_set_path = config['paths']['true_set_path']
         self.new_texts_path = config['paths']['new_texts_path']
         self.batch_size = config['data']['batch_size']
+        self.db = DatabaseManager(config)
         
-        # Setup logging
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.INFO)
         
         if not self.logger.handlers:
             handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-            )
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
+
+    def get_total_rows(self) -> int:
+        return sum(1 for _ in pd.read_csv(self.new_texts_path, chunksize=10000))
+
+    def load_new_texts(self, batch_size: Optional[int] = None, resume: bool = True) -> pd.DataFrame:
+        try:
+            batch_size = batch_size or self.batch_size
+            
+            # Get processing status
+            status = self.db.get_processing_status()
+            offset = status['offset'] if resume else 0
+            
+            if offset == 0 or not resume:
+                total_rows = self.get_total_rows()
+                self.db.update_processing_status(0, total_rows, 'in_progress')
+            
+            self.logger.info(f"Loading new texts from {self.new_texts_path}, offset: {offset}")
+            
+            # Skip processed rows and load next batch
+            df = pd.read_csv(
+                self.new_texts_path,
+                skiprows=range(1, offset + 1) if offset else None,
+                nrows=batch_size
+            )
+            
+            df = self.clean_column_names(df)
+            
+            if self.validate_data(df):
+                # Update processing status
+                new_offset = offset + len(df)
+                self.db.update_processing_status(
+                    new_offset,
+                    status['total_rows'],
+                    'completed' if new_offset >= status['total_rows'] else 'in_progress'
+                )
+                
+                self.logger.info(f"Loaded batch of {len(df)} records. Progress: {new_offset}/{status['total_rows']}")
+                return df
+            else:
+                raise ValueError("New texts validation failed")
+                
+        except Exception as e:
+            self.db.update_processing_status(offset, status['total_rows'], 'failed')
+            self.logger.error(f"Error loading new texts: {str(e)}")
+            raise
 
     def clean_column_names(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -61,36 +106,6 @@ class DataLoader:
                 
         except Exception as e:
             self.logger.error(f"Error loading TRUE set: {str(e)}")
-            raise
-
-    def load_new_texts(self, batch_size: Optional[int] = None) -> pd.DataFrame:
-        """
-        Load new texts, optionally in batches
-        Args:
-            batch_size: Optional batch size override
-        Returns: DataFrame with new texts
-        """
-        try:
-            batch_size = batch_size or self.batch_size
-            self.logger.info(f"Loading new texts from {self.new_texts_path}")
-            
-            if batch_size:
-                # Use chunking for large files
-                df = next(pd.read_csv(self.new_texts_path, chunksize=batch_size))
-                self.logger.info(f"Loaded batch of {len(df)} new text records")
-            else:
-                df = pd.read_csv(self.new_texts_path)
-                self.logger.info(f"Loaded {len(df)} new text records")
-            
-            df = self.clean_column_names(df)
-            
-            if self.validate_data(df):
-                return df
-            else:
-                raise ValueError("New texts validation failed")
-                
-        except Exception as e:
-            self.logger.error(f"Error loading new texts: {str(e)}")
             raise
 
     def validate_data(self, df: pd.DataFrame) -> bool:
