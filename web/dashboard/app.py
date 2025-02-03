@@ -254,6 +254,8 @@ class DashboardApp:
             st.error(f"Error showing results table: {str(e)}")
 
     def show_comprehensive_report(self):
+        correlation_matrix = self.compute_correlation_matrix()  # Make sure this method exists
+
         """Generate comprehensive analysis report"""
         st.header("Comprehensive Similarity Analysis Report")
 
