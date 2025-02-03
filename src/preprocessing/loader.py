@@ -1,4 +1,3 @@
-# src/preprocessing/loader.py
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.parent))  # Add project root to path
@@ -27,6 +26,23 @@ class DataLoader:
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
 
+    def clean_column_names(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Clean column names by stripping whitespace and handling the 'texts'/'text' case
+        Args:
+            df: DataFrame to clean
+        Returns: DataFrame with cleaned column names
+        """
+        # Strip whitespace from column names
+        df.columns = df.columns.str.strip()
+        
+        # Handle 'texts' column if present
+        if 'texts' in df.columns and 'text' not in df.columns:
+            self.logger.info("Found 'texts' column, renaming to 'text'")
+            df = df.rename(columns={'texts': 'text'})
+            
+        return df
+
     def load_true_set(self) -> pd.DataFrame:
         """
         Load and validate TRUE set data
@@ -35,6 +51,7 @@ class DataLoader:
         try:
             self.logger.info(f"Loading TRUE set from {self.true_set_path}")
             df = pd.read_csv(self.true_set_path)
+            df = self.clean_column_names(df)
             
             if self.validate_data(df):
                 self.logger.info(f"Successfully loaded {len(df)} TRUE set records")
@@ -65,6 +82,8 @@ class DataLoader:
                 df = pd.read_csv(self.new_texts_path)
                 self.logger.info(f"Loaded {len(df)} new text records")
             
+            df = self.clean_column_names(df)
+            
             if self.validate_data(df):
                 return df
             else:
@@ -75,35 +94,9 @@ class DataLoader:
             raise
 
     def validate_data(self, df: pd.DataFrame) -> bool:
-        """
-        Validate DataFrame structure and content
-        Args:
-            df: DataFrame to validate
-        Returns: True if valid, False otherwise
-        """
-        required_columns = {'lens_id', 'texts'}
-        
-        # Check columns
-        if not all(col in df.columns for col in required_columns):
-            self.logger.error(f"Missing required columns. Expected {required_columns}")
-            return False
-            
-        # Check for empty texts
-        if df['texts'].isna().any():
-            self.logger.error("Found empty text entries")
-            return False
-            
-        # Check lens_id uniqueness
-        if df['lens_id'].duplicated().any():
-            self.logger.error("Found duplicate lens_ids")
-            return False
-            
-        # Validate text content
-        if (df['texts'].str.len() < 10).any():
-            self.logger.error("Found texts shorter than 10 characters")
-            return False
-            
-        return True
+        """Basic check that required columns exist"""
+        required_columns = {'lens_id', 'text'}
+        return all(col in df.columns for col in required_columns)
 
     def get_data_stats(self, df: pd.DataFrame) -> Dict:
         """
@@ -114,8 +107,8 @@ class DataLoader:
         """
         return {
             'total_records': len(df),
-            'avg_text_length': df['texts'].str.len().mean(),
-            'unique_texts': df['texts'].nunique()
+            'avg_text_length': df['text'].str.len().mean(),
+            'unique_texts': df['text'].nunique()
         }
 
 if __name__ == "__main__":

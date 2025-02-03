@@ -94,8 +94,8 @@ class DashboardApp:
             st.dataframe(new_df.head())
             
             # Clean texts
-            cleaned_true = self.cleaner.batch_process(true_df['texts'].tolist())
-            cleaned_new = self.cleaner.batch_process(new_df['texts'].tolist())
+            cleaned_true = self.cleaner.batch_process(true_df['text'].tolist())
+            cleaned_new = self.cleaner.batch_process(new_df['text'].tolist())
             
             # Log cleaned text sizes and contents
             st.write(f"Cleaned TRUE set size: {len(cleaned_true)}")
@@ -151,7 +151,7 @@ class DashboardApp:
             # Convert to dictionary for database storage
             results = [
                 {
-                    'text_id': result.text_id,  # Changed from lens_id to text_id
+                    'text_id': result.text_id,
                     'similarity': result.similarity_score,
                     'confidence': result.confidence,
                     'label': result.label
