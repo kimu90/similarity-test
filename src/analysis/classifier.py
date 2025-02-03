@@ -20,6 +20,7 @@ class ClassificationResult:
     confidence: float
     similarity_score: float
     text_id: str
+    metric: str
 
 class TextClassifier:
     def __init__(self, config: Dict, db_manager=None):
@@ -31,7 +32,11 @@ class TextClassifier:
             db_manager: Optional database manager
         """
         # Threshold settings
-        self.threshold = config.get('threshold', 0.8)
+        self.thresholds = {
+            'cosine': config.get('cosine_threshold', 0.8),
+            'jaccard': config.get('jaccard_threshold', 0.8),
+            'lcs': config.get('lcs_threshold', 0.8)
+        }
         self.min_confidence = config.get('min_confidence', 0.6)
         
         # Logging setup
@@ -44,65 +49,75 @@ class TextClassifier:
         
         self.db_manager = db_manager
 
-    def classify_text(self, similarity: float, text_id: str) -> ClassificationResult:
+    def classify_text(self, 
+                     similarity_score: float, 
+                     text_id: str,
+                     metric: str = 'cosine') -> ClassificationResult:
         """
         Classify a single text based on similarity score
         
         Args:
-            similarity: Similarity score
+            similarity_score: Similarity score
             text_id: Unique identifier for the text
+            metric: Similarity metric used
         
         Returns:
             ClassificationResult object
         """
-        is_similar = similarity >= self.threshold
-        confidence = self._calculate_confidence(similarity)
+        threshold = self.thresholds[metric]
+        is_similar = similarity_score >= threshold
+        confidence = self._calculate_confidence(similarity_score, threshold)
         
         return ClassificationResult(
             label=is_similar,
             confidence=confidence,
-            similarity_score=similarity,
-            text_id=text_id
+            similarity_score=similarity_score,
+            text_id=text_id,
+            metric=metric
         )
 
     def batch_classify(self, 
-                       similarities: np.ndarray, 
-                       text_ids: List[str]) -> List[ClassificationResult]:
+                      similarity_scores: np.ndarray,
+                      text_ids: List[str],
+                      metric: str = 'cosine') -> List[ClassificationResult]:
         """
         Classify a batch of texts
         
         Args:
-            similarities: Array of similarity scores
+            similarity_scores: Array of similarity scores
             text_ids: List of text identifiers
+            metric: Similarity metric used
         
         Returns:
             List of ClassificationResult objects
         """
         return [
-            self.classify_text(score, id)
-            for score, id in zip(similarities, text_ids)
+            self.classify_text(score, id, metric)
+            for score, id in zip(similarity_scores, text_ids)
         ]
 
-    def _calculate_confidence(self, similarity: float) -> float:
+    def _calculate_confidence(self, similarity: float, threshold: float) -> float:
         """
         Calculate confidence score based on similarity
         
         Args:
             similarity: Similarity score
+            threshold: Classification threshold
         
         Returns:
             Confidence score between 0 and 1
         """
-        if similarity >= self.threshold:
+        if similarity >= threshold:
             # Normalize confidence for scores above threshold
-            return min(1.0, similarity / self.threshold)
+            return min(1.0, similarity / threshold)
         else:
             # Normalize confidence for scores below threshold
-            return min(1.0, (1 - similarity) / (1 - self.threshold))
+            return min(1.0, (1 - similarity) / (1 - threshold))
 
     def store_classifications(self, classifications: List[ClassificationResult]):
         """
         Store classification results in database
+        
         Args:
             classifications: List of classification results
         """
@@ -110,9 +125,10 @@ class TextClassifier:
         results = [
             {
                 'text_id': result.text_id,
-                'similarity': float(result.similarity_score),  # Convert to Python float
-                'confidence': float(result.confidence),  # Convert to Python float
-                'label': bool(result.label)  # Ensure boolean
+                'similarity_score': float(result.similarity_score),
+                'metric': result.metric,
+                'confidence': float(result.confidence),
+                'label': bool(result.label)
             }
             for result in classifications
         ]
@@ -121,14 +137,16 @@ class TextClassifier:
         self.db_manager.store_results(results)
 
     def get_similarity_results(self, 
-                                min_score: float = 0.0, 
-                                max_score: float = 1.0) -> List[ClassificationResult]:
+                             min_score: float = 0.0, 
+                             max_score: float = 1.0,
+                             metric: str = 'cosine') -> List[ClassificationResult]:
         """
         Retrieve similarity results from database
         
         Args:
             min_score: Minimum similarity score
             max_score: Maximum similarity score
+            metric: Similarity metric to query
         
         Returns:
             List of ClassificationResult objects
@@ -137,12 +155,17 @@ class TextClassifier:
             query = """
                 SELECT text_id, similarity_score, confidence, label 
                 FROM classifications 
-                WHERE similarity_score BETWEEN :min_score AND :max_score
+                WHERE metric = :metric
+                AND similarity_score BETWEEN :min_score AND :max_score
             """
             df = pd.read_sql(
                 query, 
                 self.db_manager.engine, 
-                params={'min_score': min_score, 'max_score': max_score}
+                params={
+                    'metric': metric,
+                    'min_score': min_score, 
+                    'max_score': max_score
+                }
             )
             
             # Convert to ClassificationResult objects
@@ -151,7 +174,8 @@ class TextClassifier:
                     label=row['label'],
                     confidence=row['confidence'],
                     similarity_score=row['similarity_score'],
-                    text_id=row['text_id']
+                    text_id=row['text_id'],
+                    metric=metric
                 )
                 for _, row in df.iterrows()
             ]
@@ -161,8 +185,8 @@ class TextClassifier:
             return []
 
     def evaluate(self, 
-                 predictions: List[bool], 
-                 ground_truth: List[bool]) -> Dict[str, float]:
+                predictions: List[bool], 
+                ground_truth: List[bool]) -> Dict[str, float]:
         """
         Calculate classification metrics
         
@@ -199,6 +223,18 @@ class TextClassifier:
             self.logger.error(f"Error evaluating classification: {str(e)}")
             return {}
 
+    def get_metric_threshold(self, metric: str) -> float:
+        """
+        Get threshold for specific metric
+        
+        Args:
+            metric: Similarity metric
+        
+        Returns:
+            Threshold value for the metric
+        """
+        return self.thresholds.get(metric, 0.8)
+
 if __name__ == "__main__":
     # Test classifier
     from src.analysis.similarity import SimilarityAnalyzer
@@ -209,28 +245,30 @@ if __name__ == "__main__":
     similarity = SimilarityAnalyzer(config, db_manager)
     classifier = TextClassifier(config, db_manager)
 
-    # Retrieve embeddings from database
-    true_embeddings, true_text_ids = similarity.get_true_embeddings_with_ids()
-    new_embeddings, new_text_ids = similarity.get_new_embeddings_with_ids()
+    # Test with some random data
+    test_scores = np.random.rand(10)
+    test_ids = [f"test_{i}" for i in range(10)]
 
-    # Calculate similarities
-    similarities = similarity.batch_similarities(new_embeddings, true_embeddings)
+    # Test classification for each metric
+    for metric in ['cosine', 'jaccard', 'lcs']:
+        print(f"\nTesting {metric} classification:")
+        
+        # Classify texts
+        classifications = classifier.batch_classify(
+            test_scores,
+            test_ids,
+            metric=metric
+        )
 
-    # Classify texts
-    classifications = classifier.batch_classify(
-        similarities.max(axis=1), 
-        new_text_ids
-    )
+        # Store classifications
+        classifier.store_classifications(classifications)
 
-    # Store classifications
-    classifier.store_classifications(classifications)
-
-    # Retrieve and print stored classifications
-    stored_results = classifier.get_similarity_results()
-    
-    print("\nClassification Results:")
-    for result in stored_results[:5]:  # Show first 5 results
-        print(f"\nID: {result.text_id}")
-        print(f"Label: {'Similar' if result.label else 'Different'}")
-        print(f"Confidence: {result.confidence:.3f}")
-        print(f"Similarity Score: {result.similarity_score:.3f}")
+        # Retrieve and print stored classifications
+        stored_results = classifier.get_similarity_results(metric=metric)
+        
+        print("\nClassification Results:")
+        for result in stored_results[:3]:  # Show first 3 results
+            print(f"\nID: {result.text_id}")
+            print(f"Label: {'Similar' if result.label else 'Different'}")
+            print(f"Confidence: {result.confidence:.3f}")
+            print(f"Similarity Score: {result.similarity_score:.3f}")

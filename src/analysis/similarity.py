@@ -36,7 +36,7 @@ class SimilarityAnalyzer:
         
         self.db_manager = db_manager
 
-    def calculate_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
+    def calculate_cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
         """
         Calculate cosine similarity between vectors
         
@@ -48,6 +48,54 @@ class SimilarityAnalyzer:
             Similarity score
         """
         return float(cosine_similarity(vec1.reshape(1, -1), vec2.reshape(1, -1)))
+
+    def calculate_jaccard_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
+        """
+        Calculate Jaccard similarity between vectors
+        
+        Args:
+            vec1: First embedding vector
+            vec2: Second embedding vector
+        
+        Returns:
+            Similarity score
+        """
+        # Convert vectors to binary (presence/absence)
+        vec1_binary = (vec1 > 0).astype(int)
+        vec2_binary = (vec2 > 0).astype(int)
+        
+        intersection = np.sum(np.minimum(vec1_binary, vec2_binary))
+        union = np.sum(np.maximum(vec1_binary, vec2_binary))
+        
+        return float(intersection / union if union > 0 else 0.0)
+
+    def calculate_lcs_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
+        """
+        Calculate LCS similarity between vectors
+        
+        Args:
+            vec1: First embedding vector
+            vec2: Second embedding vector
+        
+        Returns:
+            Similarity score
+        """
+        # Convert vectors to binary for sequence comparison
+        vec1_binary = (vec1 > 0).astype(int)
+        vec2_binary = (vec2 > 0).astype(int)
+        
+        m, n = len(vec1_binary), len(vec2_binary)
+        matrix = np.zeros((m + 1, n + 1))
+        
+        for i in range(1, m + 1):
+            for j in range(1, n + 1):
+                if vec1_binary[i-1] == vec2_binary[j-1]:
+                    matrix[i,j] = matrix[i-1,j-1] + 1
+                else:
+                    matrix[i,j] = max(matrix[i-1,j], matrix[i,j-1])
+        
+        lcs_length = matrix[m,n]
+        return float((2.0 * lcs_length) / (m + n) if (m + n) > 0 else 0.0)
 
     def get_true_embeddings_with_ids(self) -> Tuple[np.ndarray, List[str]]:
         """
@@ -99,13 +147,14 @@ class SimilarityAnalyzer:
             self.logger.error(f"Error retrieving new embeddings: {str(e)}")
             raise
 
-    def batch_similarities(self, new_vecs: np.ndarray, true_vecs: np.ndarray) -> np.ndarray:
+    def batch_similarities(self, new_vecs: np.ndarray, true_vecs: np.ndarray, metric: str = 'cosine') -> np.ndarray:
         """
         Calculate similarities for batches
         
         Args:
             new_vecs: Matrix of new embeddings
             true_vecs: Matrix of TRUE set embeddings
+            metric: Which similarity metric to use ('cosine', 'jaccard', or 'lcs')
         
         Returns:
             Matrix of similarity scores
@@ -127,23 +176,45 @@ class SimilarityAnalyzer:
             true_vecs = true_vecs.reshape(1, -1)
         
         try:
-            similarities = cosine_similarity(new_vecs, true_vecs)
-            self.logger.info(f"Calculated similarities: shape {similarities.shape}")
+            # Fast path for cosine similarity
+            if metric == 'cosine':
+                similarities = cosine_similarity(new_vecs, true_vecs)
+                
+            # Calculate Jaccard similarity if requested
+            elif metric == 'jaccard':
+                similarities = np.array([[
+                    self.calculate_jaccard_similarity(v1, v2)
+                    for v2 in true_vecs
+                ] for v1 in new_vecs])
+                
+            # Calculate LCS similarity if requested
+            elif metric == 'lcs':
+                similarities = np.array([[
+                    self.calculate_lcs_similarity(v1, v2)
+                    for v2 in true_vecs
+                ] for v1 in new_vecs])
+                
+            else:
+                self.logger.error(f"Unknown similarity metric: {metric}")
+                return np.array([])
+            
+            self.logger.info(f"Calculated {metric} similarities: shape {similarities.shape}")
             return similarities
+            
         except Exception as e:
             self.logger.error(f"Error calculating similarities: {str(e)}")
             return np.array([])
 
     def get_most_similar(self, 
-                          similarities: np.ndarray, 
-                          true_text_ids: List[str], 
-                          new_text_ids: List[str],
-                          k: int = 5) -> List[SimilarityResult]:
+                        similarities: np.ndarray, 
+                        true_text_ids: List[str], 
+                        new_text_ids: List[str],
+                        k: int = 5) -> List[SimilarityResult]:
         """
         Get top k similar indices with scores
         
         Args:
-            similarities: Array of similarity scores
+            similarities: Matrix of similarity scores
             true_text_ids: List of TRUE set text IDs
             new_text_ids: List of new text IDs
             k: Number of top results to return
@@ -167,8 +238,8 @@ class SimilarityAnalyzer:
             confidence = self._calculate_confidence(score)
             
             results.append(SimilarityResult(
-                score=score, 
-                index=true_idx, 
+                score=score,
+                index=true_idx,
                 confidence=confidence,
                 text_id=true_text_ids[true_idx]
             ))
@@ -187,24 +258,28 @@ class SimilarityAnalyzer:
         """
         return min(1.0, similarity_score / self.similarity_threshold)
 
-    def store_results(self, new_text_ids: List[str], similarities: np.ndarray):
+    def store_results(self, new_text_ids: List[str], similarities: np.ndarray, metric: str = 'cosine'):
+        """
+        Store similarity results
+        
+        Args:
+            new_text_ids: List of text IDs
+            similarities: Matrix of similarity scores
+            metric: Similarity metric used
+        """
         try:
-            # Lazy import to avoid circular dependency
-            from src.analysis.classifier import TextClassifier
-            
-            classifier = TextClassifier(config, self.db_manager)
             max_similarities = similarities.max(axis=1)
-            classifications = classifier.batch_classify(max_similarities, new_text_ids)
             
-            # Convert to dictionary for database storage
+            # Prepare results for database storage
             results = [
                 {
-                    'text_id': result.text_id,
-                    'similarity': float(result.similarity_score),  # Convert to Python float
-                    'confidence': float(result.confidence),  # Convert to Python float
-                    'label': bool(result.label)  # Ensure boolean
+                    'text_id': text_id,
+                    'similarity_score': float(score),
+                    'metric': metric,
+                    'confidence': float(self._calculate_confidence(score)),
+                    'label': bool(score >= self.similarity_threshold)
                 }
-                for result in classifications
+                for text_id, score in zip(new_text_ids, max_similarities)
             ]
             
             self.db_manager.store_results(results)
@@ -226,23 +301,30 @@ if __name__ == "__main__":
     true_embeddings, true_text_ids = similarity.get_true_embeddings_with_ids()
     new_embeddings, new_text_ids = similarity.get_new_embeddings_with_ids()
 
-    # Calculate similarities
-    similarities = similarity.batch_similarities(new_embeddings, true_embeddings)
+    # Test each similarity metric
+    for metric in ['cosine', 'jaccard', 'lcs']:
+        print(f"\nTesting {metric} similarity:")
+        
+        # Calculate similarities
+        similarities = similarity.batch_similarities(
+            new_embeddings, 
+            true_embeddings,
+            metric=metric
+        )
 
-    # Get most similar texts
-    print("\nMost similar texts:")
-    results = similarity.get_most_similar(
-        similarities, 
-        true_text_ids, 
-        new_text_ids, 
-        k=3
-    )
+        # Get most similar texts
+        results = similarity.get_most_similar(
+            similarities, 
+            true_text_ids, 
+            new_text_ids, 
+            k=3
+        )
 
-    # Store results in database
-    similarity.store_results(new_text_ids, similarities)
+        # Store results
+        similarity.store_results(new_text_ids, similarities, metric)
 
-    # Print results
-    for result in results:
-        print(f"\nSimilarity: {result.score:.3f}")
-        print(f"Confidence: {result.confidence:.3f}")
-        print(f"Text ID: {result.text_id}")
+        # Print results
+        for result in results:
+            print(f"\nSimilarity: {result.score:.3f}")
+            print(f"Confidence: {result.confidence:.3f}")
+            print(f"Text ID: {result.text_id}")

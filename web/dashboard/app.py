@@ -53,32 +53,37 @@ class DashboardApp:
 
         # Sidebar controls
         st.sidebar.header("Controls")
-        threshold = st.sidebar.slider("Similarity Threshold", 0.0, 1.0, 0.8, 0.05)
+        selected_metric = st.sidebar.selectbox(
+            "Similarity Metric",
+            ["cosine", "jaccard", "lcs"],
+            format_func=lambda x: x.capitalize()
+        )
+        threshold = st.sidebar.slider(f"{selected_metric.capitalize()} Similarity Threshold", 0.0, 1.0, 0.8, 0.05)
         batch_size = st.sidebar.number_input("Batch Size", 10, 1000, 100)
         
         # Load data button
         if st.sidebar.button("Load and Process New Data"):
             with st.spinner("Loading and processing data..."):
-                self.process_new_data(batch_size)
+                self.process_new_data(batch_size, selected_metric)
 
         # Main content layout
         col1, col2 = st.columns(2)
         
         with col1:
             st.subheader("Similarity Distribution")
-            self.show_similarity_distribution(threshold)
+            self.show_similarity_distribution(threshold, selected_metric)
             
             st.subheader("Classification Metrics")
-            self.show_classification_metrics(threshold)
+            self.show_classification_metrics(threshold, selected_metric)
             
         with col2:
             st.subheader("Top Similar Texts")
-            self.show_top_similar_texts()
+            self.show_top_similar_texts(selected_metric)
             
             st.subheader("Results Overview")
-            self.show_results_table(threshold)
+            self.show_results_table(threshold, selected_metric)
 
-    def process_new_data(self, batch_size: int):
+    def process_new_data(self, batch_size: int, selected_metric: str):
         """Process new batch of data"""
         try:
             # Load data
@@ -97,7 +102,7 @@ class DashboardApp:
             cleaned_true = self.cleaner.batch_process(true_df['text'].tolist())
             cleaned_new = self.cleaner.batch_process(new_df['text'].tolist())
             
-            # Log cleaned text sizes and contents
+            # Log cleaned text sizes
             st.write(f"Cleaned TRUE set size: {len(cleaned_true)}")
             st.write(f"Cleaned new texts size: {len(cleaned_new)}")
             
@@ -121,112 +126,125 @@ class DashboardApp:
             st.write(f"TRUE embeddings shape: {true_embeddings.shape}")
             st.write(f"New embeddings shape: {new_embeddings.shape}")
             
-            # Ensure 2D arrays for similarity calculation
-            if new_embeddings.ndim == 1:
-                new_embeddings = new_embeddings.reshape(-1, 1)
-            
-            # Calculate similarities
-            similarities = self.similarity.batch_similarities(new_embeddings, true_embeddings)
+            # Calculate similarities for selected metric only
+            similarities = self.similarity.batch_similarities(
+                new_embeddings, 
+                true_embeddings,
+                metric=selected_metric
+            )
             
             # Log similarities
-            st.write(f"Similarities shape: {similarities.shape}")
+            st.write(f"{selected_metric.capitalize()} similarities shape: {similarities.shape}")
             
-            # Store results
-            self.store_results(new_df['lens_id'].tolist(), similarities)
+            # Store results for selected metric
+            self.similarity.store_results(
+                new_df['lens_id'].tolist(), 
+                similarities,
+                metric=selected_metric
+            )
             
             st.success(f"Processed {len(new_df)} new texts successfully!")
             
         except Exception as e:
-            import traceback
             st.error(f"Error processing data: {str(e)}")
             st.error("Detailed Traceback:")
             st.code(traceback.format_exc())
 
-    def store_results(self, new_text_ids: list, similarities: np.ndarray):
-        """Store processing results in database"""
-        try:
-            max_similarities = similarities.max(axis=1)
-            classifications = self.classifier.batch_classify(max_similarities, new_text_ids)
-            
-            # Convert to dictionary for database storage
-            results = [
-                {
-                    'text_id': result.text_id,
-                    'similarity': result.similarity_score,
-                    'confidence': result.confidence,
-                    'label': result.label
-                }
-                for result in classifications
-            ]
-            
-            # Store in database
-            self.db.store_results(results)
-            logger.info(f"Stored {len(results)} classification results")
-        
-        except Exception as e:
-            logger.error(f"Error storing results: {str(e)}")
-            st.error(f"Error storing results: {str(e)}")
-
-    def show_similarity_distribution(self, threshold: float):
+    def show_similarity_distribution(self, threshold: float, metric: str):
         """Display similarity score distribution"""
         try:
-            results = self.db.query_by_similarity()
+            results = self.db.query_by_similarity(metric=metric)
             if not results.empty:
-                fig = self.visualizer.plot_distribution(results['similarity_score'].values)
-                st.plotly_chart(fig)
+                # Use 'similarity_score' instead of 'cosine_score'
+                fig = self.visualizer.plot_distribution(
+                    results['similarity_score'].values,
+                    threshold,
+                    f"{metric.capitalize()} Similarity Distribution"
+                )
+                st.plotly_chart(fig, use_container_width=True)
             else:
                 st.warning("No similarity data available. Load data first.")
         except Exception as e:
             st.error(f"Error showing distribution: {str(e)}")
 
-    def show_classification_metrics(self, threshold: float):
+    def show_classification_metrics(self, threshold: float, metric: str):
         """Display classification metrics"""
         try:
-            results = self.db.query_by_similarity()
+            results = self.db.query_by_similarity(metric=metric)
             if not results.empty:
                 predictions = results['similarity_score'] >= threshold
                 metrics = {
                     "Total Processed": len(results),
                     "Similar Texts": sum(predictions),
                     "Different Texts": len(predictions) - sum(predictions),
-                    "Avg Similarity": results['similarity_score'].mean(),
+                    f"Avg {metric.capitalize()} Score": results['similarity_score'].mean(),
                     "Avg Confidence": results['confidence'].mean()
                 }
                 
-                for metric, value in metrics.items():
-                    st.metric(metric, f"{value:.2f}")
+                cols = st.columns(len(metrics))
+                for col, (metric_name, value) in zip(cols, metrics.items()):
+                    col.metric(metric_name, f"{value:.2f}")
             else:
                 st.warning("No classification data available. Load data first.")
         except Exception as e:
             st.error(f"Error showing metrics: {str(e)}")
 
-    def show_top_similar_texts(self):
+    def show_results_table(self, threshold: float, metric: str):
+        """Display results table"""
+        try:
+            results = self.db.query_by_similarity(metric=metric)
+            if not results.empty:
+                # Add classification column
+                results[f'is_similar'] = results['similarity_score'] >= threshold
+                
+                # Show filtered dataframe
+                st.dataframe(
+                    results[[
+                        'text_id', 
+                        'similarity_score',
+                        'confidence',
+                        'is_similar'
+                    ]],
+                    use_container_width=True,
+                    height=400
+                )
+                
+                # Add download button
+                csv = results.to_csv(index=False)
+                st.download_button(
+                    "Download Results CSV",
+                    csv,
+                    "similarity_results.csv",
+                    "text/csv",
+                    key='download-csv'
+                )
+            else:
+                st.warning("No results available. Load data first.")
+        except Exception as e:
+            st.error(f"Error showing results table: {str(e)}")
+    def show_top_similar_texts(self, metric: str):
         """Display most similar texts"""
         try:
-            results = self.db.query_by_similarity()
+            results = self.db.query_by_similarity(metric=metric)
             if not results.empty:
-                top_similar = results.nlargest(5, 'similarity_score')
+                score_column = f"{metric}_score"
+                top_similar = results.nlargest(5, score_column)
+                
                 for _, row in top_similar.iterrows():
-                    st.write(f"**Text ID:** {row['text_id']}")
-                    st.write(f"Similarity: {row['similarity_score']:.3f}")
-                    st.write(f"Confidence: {row['confidence']:.3f}")
-                    st.write("---")
+                    with st.expander(f"Text ID: {row['text_id']}"):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric(f"{metric.capitalize()} Score", 
+                                    f"{row[score_column]:.3f}")
+                        with col2:
+                            st.metric("Confidence", f"{row['confidence']:.3f}")
             else:
                 st.warning("No similar texts found. Load data first.")
         except Exception as e:
             st.error(f"Error showing top similar texts: {str(e)}")
 
-    def show_results_table(self, threshold: float):
-        """Display results table"""
-        try:
-            results = self.db.query_by_similarity()
-            if not results.empty:
-                results['is_similar'] = results['similarity_score'] >= threshold
-                st.dataframe(results)
-            else:
-                st.warning("No results available. Load data first.")
-        except Exception as e:
-            st.error(f"Error showing results table: {str(e)}")
+ 
+ 
 
 def main():
     app = DashboardApp()

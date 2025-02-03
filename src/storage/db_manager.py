@@ -33,10 +33,10 @@ class DatabaseManager:
             # Create SQLAlchemy engine
             self.engine = sa.create_engine(
                 db_url, 
-                pool_size=10,  # Connection pool size
-                max_overflow=20,  # Max additional connections
-                pool_timeout=30,  # Timeout for getting a connection from pool
-                pool_recycle=1800  # Recycle connections after 30 minutes
+                pool_size=10,
+                max_overflow=20,
+                pool_timeout=30,
+                pool_recycle=1800
             )
             
             # Create session factory
@@ -54,10 +54,7 @@ class DatabaseManager:
             raise
 
     def _init_tables(self):
-        """
-        Initialize database tables with vector extension
-        Uses SQLAlchemy metadata for table creation
-        """
+        """Initialize database tables"""
         try:
             # Create metadata object
             metadata = sa.MetaData()
@@ -72,15 +69,17 @@ class DatabaseManager:
                 sa.Column('created_at', sa.DateTime, server_default=sa.func.now())
             )
             
-            # Define classifications table
+            # Define classifications table with unique constraint on text_id and metric
             sa.Table(
                 'classifications', metadata,
                 sa.Column('id', sa.Integer, primary_key=True),
                 sa.Column('text_id', sa.String),
                 sa.Column('similarity_score', sa.Float),
+                sa.Column('metric', sa.String),
                 sa.Column('confidence', sa.Float),
                 sa.Column('label', sa.Boolean),
-                sa.Column('created_at', sa.DateTime, server_default=sa.func.now())
+                sa.Column('created_at', sa.DateTime, server_default=sa.func.now()),
+                sa.UniqueConstraint('text_id', 'metric', name='uix_text_metric')  # Add this line
             )
             
             # Create all tables
@@ -141,31 +140,36 @@ class DatabaseManager:
 
     def store_results(self, results: List[Dict]):
         """
-        Store classification results
+        Store classification results for a single metric
         
         Args:
             results: List of classification result dictionaries
         """
         session = self.SessionLocal()
         try:
-            # Prepare data for bulk insert, converting numpy types
+            # Prepare data for bulk insert
             insert_data = [
                 {
                     'text_id': r['text_id'],
-                    'similarity_score': float(r['similarity']),  # Convert to Python float
-                    'confidence': float(r['confidence']),  # Convert to Python float
-                    'label': bool(r['label'])  # Ensure boolean
+                    'similarity_score': float(r['similarity_score']),
+                    'metric': r['metric'],
+                    'confidence': float(r['confidence']),
+                    'label': bool(r['label'])
                 }
                 for r in results
             ]
             
-            # Bulk insert
+            # Bulk insert/update using ON CONFLICT
             session.execute(
                 sa.text(
                     """
                     INSERT INTO classifications 
-                    (text_id, similarity_score, confidence, label) 
-                    VALUES (:text_id, :similarity_score, :confidence, :label)
+                    (text_id, similarity_score, metric, confidence, label) 
+                    VALUES (:text_id, :similarity_score, :metric, :confidence, :label)
+                    ON CONFLICT (text_id, metric) DO UPDATE 
+                    SET similarity_score = EXCLUDED.similarity_score,
+                        confidence = EXCLUDED.confidence,
+                        label = EXCLUDED.label
                     """
                 ),
                 insert_data
@@ -182,33 +186,56 @@ class DatabaseManager:
             session.close()
 
     def query_by_similarity(self, 
-                         min_score: float = 0.0, 
-                         max_score: float = 1.0) -> pd.DataFrame:
+                       min_score: float = 0.0, 
+                       max_score: float = 1.0,
+                       metric: str = 'cosine') -> pd.DataFrame:
         """
-        Query classifications by similarity score
+        Query classifications by similarity score for a specific metric
         """
         try:
-            # Use a more robust query method
+            # Note that we're querying 'similarity_score' not 'cosine_score'
             query = """
-                SELECT * FROM classifications
-                WHERE similarity_score BETWEEN :min_score AND :max_score
+                SELECT 
+                    text_id,
+                    similarity_score,  
+                    metric,
+                    confidence,
+                    label,
+                    created_at
+                FROM classifications
+                WHERE metric = :metric
+                AND similarity_score BETWEEN :min_score AND :max_score
                 ORDER BY similarity_score DESC
             """
             
-            # Use SQLAlchemy engine connection
             with self.engine.connect() as connection:
-                return pd.read_sql(
+                df = pd.read_sql(
                     sa.text(query), 
                     connection, 
                     params={
+                        'metric': metric,
                         'min_score': min_score, 
                         'max_score': max_score
                     }
                 )
+                
+                # If needed, rename the column for compatibility
+                if 'similarity_score' in df.columns:
+                    df[f'{metric}_score'] = df['similarity_score']
+                
+                return df
+                
         except Exception as e:
             self.logger.error(f"Error querying similarities: {str(e)}")
-            # Return an empty DataFrame with the expected columns
-            return pd.DataFrame(columns=['text_id', 'similarity_score', 'confidence', 'label'])
+            # Return empty DataFrame with correct column names
+            return pd.DataFrame(columns=[
+                'text_id', 
+                'similarity_score', 
+                f'{metric}_score',  # Add both column names for compatibility
+                'metric', 
+                'confidence', 
+                'label'
+            ])
 
     def get_true_embeddings(self) -> np.ndarray:
         """
@@ -230,11 +257,49 @@ class DatabaseManager:
             raise
 
     def close_connection(self):
-        """
-        Close database engine
-        """
+        """Close database engine"""
         try:
             self.engine.dispose()
             self.logger.info("Database connection closed")
         except Exception as e:
             self.logger.error(f"Error closing database connection: {str(e)}")
+
+if __name__ == "__main__":
+    # Test database manager
+    from config import config
+    
+    # Initialize database manager
+    db_manager = DatabaseManager(config)
+    
+    # Test embedding storage
+    test_embeddings = np.random.rand(5, 10)
+    test_metadata = {
+        'ids': [f'test_{i}' for i in range(5)],
+        'is_true': [True] * 5
+    }
+    
+    # Store test embeddings
+    db_manager.store_embeddings(test_embeddings, test_metadata)
+    
+    # Test classification storage
+    test_results = [
+        {
+            'text_id': f'test_{i}',
+            'similarity_score': float(np.random.rand()),
+            'metric': 'cosine',
+            'confidence': float(np.random.rand()),
+            'label': bool(np.random.choice([True, False]))
+        }
+        for i in range(5)
+    ]
+    
+    # Store test results
+    db_manager.store_results(test_results)
+    
+    # Test querying
+    results = db_manager.query_by_similarity(metric='cosine')
+    print("\nQuery Results:")
+    print(results)
+    
+    # Close connection
+    db_manager.close_connection()
