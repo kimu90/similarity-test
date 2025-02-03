@@ -49,6 +49,38 @@ class SimilarityAnalyzer:
         """
         return float(cosine_similarity(vec1.reshape(1, -1), vec2.reshape(1, -1)))
 
+    def compute_correlation_matrix(self):
+        """
+        Compute a correlation matrix between true set and new texts
+        
+        Returns:
+            np.ndarray: Correlation matrix of similarities
+        """
+        try:
+            # Combine texts from both datasets
+            all_texts = pd.concat([
+                self.true_set_df['text'], 
+                self.new_texts_df['text']
+            ])
+
+            # Create TF-IDF vectorizer
+            vectorizer = TfidfVectorizer(stop_words='english')
+            
+            # Compute TF-IDF matrix
+            tfidf_matrix = vectorizer.fit_transform(all_texts)
+            
+            # Compute cosine similarity matrix
+            correlation_matrix = cosine_similarity(tfidf_matrix)
+            
+            # Store the matrix as an instance attribute
+            self.correlation_matrix = correlation_matrix
+            
+            return correlation_matrix
+        
+        except Exception as e:
+            print(f"Error computing correlation matrix: {e}")
+            return None
+
     def calculate_jaccard_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
         """
         Calculate Jaccard similarity between vectors

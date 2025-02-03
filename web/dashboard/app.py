@@ -95,6 +95,38 @@ class DashboardApp:
         with report_tab:
             self.show_comprehensive_report()
 
+    def compute_correlation_matrix(self):
+        """
+        Compute a correlation matrix between true set and new texts
+        
+        Returns:
+            np.ndarray: Correlation matrix of similarities
+        """
+        try:
+            # Combine texts from both datasets
+            all_texts = pd.concat([
+                self.true_set_df['text'], 
+                self.new_texts_df['text']
+            ])
+
+            # Create TF-IDF vectorizer
+            vectorizer = TfidfVectorizer(stop_words='english')
+            
+            # Compute TF-IDF matrix
+            tfidf_matrix = vectorizer.fit_transform(all_texts)
+            
+            # Compute cosine similarity matrix
+            correlation_matrix = cosine_similarity(tfidf_matrix)
+            
+            # Store the matrix as an instance attribute
+            self.correlation_matrix = correlation_matrix
+            
+            return correlation_matrix
+        
+        except Exception as e:
+            print(f"Error computing correlation matrix: {e}")
+            return None
+
     def process_new_data(self, batch_size: int, selected_metric: str):
         """Process new batch of data"""
         try:
