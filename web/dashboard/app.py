@@ -1,4 +1,3 @@
-# web/dashboard/app.py
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.parent))
@@ -26,22 +25,10 @@ import xlsxwriter
 
 from config import config
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
 class DashboardApp:
     def __init__(self):
-        """Initialize dashboard components"""
         st.set_page_config(page_title="Text Similarity Analysis", layout="wide")
-        
-        # Initialize database manager
         self.db = DatabaseManager(config)
-        
-        # Initialize components
         self.loader = DataLoader()
         self.cleaner = TextPreprocessor(config)
         self.generator = EmbeddingGenerator(config, self.db)
@@ -50,50 +37,276 @@ class DashboardApp:
         self.classifier = TextClassifier(config, self.db)
         self.metrics = MetricsCalculator()
         self.visualizer = Visualizer()
-        self.start_time = time.time()
 
     def main(self):
-        """Main dashboard layout and logic"""
         st.title("Text Similarity Analysis Dashboard")
 
-        # Create tabs for main dashboard and report
+        # Sidebar controls
+        st.sidebar.header("Controls")
+        selected_metric = st.sidebar.selectbox(
+            "Similarity Metric",
+            ["cosine", "jaccard"],
+            format_func=lambda x: x.capitalize()
+        )
+        similarity_threshold = st.sidebar.selectbox(
+            "Similarity Threshold",
+            [0.7, 0.8, 0.9],
+            format_func=lambda x: f"{x:.1f}"
+        )
+        confidence_threshold = st.sidebar.slider(
+            "Confidence Threshold", 
+            0.0, 1.0, 0.5, 0.05
+        )
+        batch_size = st.sidebar.number_input("Batch Size", 100, 8000, 2500)
+        
+        if st.sidebar.button("Load and Process New Data"):
+            with st.spinner("Loading and processing data..."):
+                self.process_new_data(batch_size, selected_metric)
+
         main_tab, report_tab = st.tabs(["Analysis Dashboard", "Comprehensive Report"])
 
         with main_tab:
-            # Sidebar controls
-            st.sidebar.header("Controls")
-            selected_metric = st.sidebar.selectbox(
-                "Similarity Metric",
-                ["cosine", "jaccard", "lcs"],
-                format_func=lambda x: x.capitalize()
-            )
-            threshold = st.sidebar.slider(f"{selected_metric.capitalize()} Similarity Threshold", 0.0, 1.0, 0.8, 0.05)
-            batch_size = st.sidebar.number_input("Batch Size", 100, 8000, 2500)
-            
-            # Load data button
-            if st.sidebar.button("Load and Process New Data"):
-                with st.spinner("Loading and processing data..."):
-                    self.process_new_data(batch_size, selected_metric)
+            col1, col2 = st.columns(2)
+            with col1:
+                self.show_similarity_distribution(similarity_threshold, selected_metric)
+                self.show_classification_metrics(similarity_threshold, selected_metric)
+            with col2:
+                self.show_top_similar_texts(selected_metric)
+                self.show_results_table(similarity_threshold, selected_metric)
 
-            # Main content layout
+        with report_tab:
+            self.show_comprehensive_report(similarity_threshold, confidence_threshold)
+
+    def show_comprehensive_report(self, similarity_threshold: float, confidence_threshold: float):
+        batch_stats = self.db.get_batch_stats()
+        metrics = ['cosine', 'jaccard']
+        
+        st.header("Comprehensive Similarity Analysis Reports")
+        
+        metrics_data = {}
+        
+        for metric in metrics:
+            st.subheader(f"{metric.capitalize()} Similarity Report")
+            results = self.db.query_by_similarity(metric=metric)
+            
+            if results.empty:
+                st.warning(f"No {metric} similarity results found.")
+                continue
+
+            status = self.db.get_processing_status(metric=metric)
+            status['total_rows'] = 443249
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Total Documents", status['total_rows'])
+                st.metric("Processed Documents", status['total_processed'])
+            with col2:
+                progress = (status['total_processed'] / status['total_rows']) * 100
+                st.metric("Progress", f"{progress:.1f}%")
+                st.metric("Status", status['status'].title())
+            with col3:
+                st.metric("Remaining Documents", status['total_rows'] - status['total_processed'])
+                st.metric("Current Batch", status.get('current_batch', 'N/A'))
+
+            # Filter by confidence
+            results = results[results['confidence'] >= confidence_threshold]
+            
+            # Store similar/different counts for pie chart
+            similar_count = len(results[results['similarity_score'] >= similarity_threshold])
+            different_count = len(results[results['similarity_score'] < similarity_threshold])
+            metrics_data[metric] = {'similar': similar_count, 'different': different_count}
+            
+            data = results['similarity_score']
+            
             col1, col2 = st.columns(2)
             
             with col1:
-                st.subheader("Similarity Distribution")
-                self.show_similarity_distribution(threshold, selected_metric)
-                
-                st.subheader("Classification Metrics")
-                self.show_classification_metrics(threshold, selected_metric)
-                
+                fig_violin = go.Figure(data=go.Violin(
+                    y=data,
+                    name=metric.capitalize(),
+                    box_visible=True,
+                    meanline_visible=True
+                ))
+                fig_violin.update_layout(
+                    title=f"{metric.capitalize()} Similarity Distribution",
+                    yaxis_title="Similarity Score"
+                )
+                st.plotly_chart(fig_violin, use_container_width=True)
+            
             with col2:
-                st.subheader("Top Similar Texts")
-                self.show_top_similar_texts(selected_metric)
+                thresholds = np.linspace(0, 1, 20)
+                ratios = [(data >= threshold).mean() for threshold in thresholds]
                 
-                st.subheader("Results Overview")
-                self.show_results_table(threshold, selected_metric)
+                fig_threshold = go.Figure(data=go.Scatter(
+                    x=thresholds,
+                    y=ratios,
+                    mode='lines+markers',
+                    name=metric.capitalize()
+                ))
+                fig_threshold.update_layout(
+                    title="Document Ratio vs Threshold",
+                    xaxis_title="Threshold",
+                    yaxis_title="Ratio of Documents"
+                )
+                st.plotly_chart(fig_threshold, use_container_width=True)
+            
+            st.subheader("Detailed Statistics")
+            stats = {
+                'Mean': data.mean(),
+                'Median': data.median(),
+                'Std Dev': data.std(),
+                'Skewness': data.skew(),
+                'Kurtosis': data.kurtosis(),
+                'Min': data.min(),
+                'Max': data.max(),
+                '25th Percentile': data.quantile(0.25),
+                '75th Percentile': data.quantile(0.75),
+                'Above 0.8': (data >= 0.8).mean(),
+                'Below 0.2': (data < 0.2).mean()
+            }
+            
+            st.table(pd.DataFrame.from_dict(stats, orient='index', columns=[metric.capitalize()]))
+            
+            # Individual metric download
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                results.to_excel(writer, sheet_name=f'{metric}_details', index=False)
+                pd.DataFrame.from_dict(stats, orient='index', columns=[metric.capitalize()]).to_excel(writer, sheet_name='Summary_Stats')
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button(
+                    label=f"Download {metric.capitalize()} Report (Excel)",
+                    data=buffer.getvalue(),
+                    file_name=f"{metric}_similarity_report_{similarity_threshold}_{confidence_threshold:.2f}.xlsx",
+                    mime="application/vnd.ms-excel"
+                )
+            
+            st.markdown("---")
 
-        with report_tab:
-            self.show_comprehensive_report()
+        # Add pie chart comparison
+        # Generate comprehensive report
+        st.subheader("Complete Report Download")
+        buffer = self.generate_full_report(similarity_threshold, confidence_threshold, metrics_data)
+        
+        st.download_button(
+            "Download Complete Analysis Report (Excel)",
+            buffer.getvalue(),
+            f"complete_similarity_analysis_{similarity_threshold}_{confidence_threshold:.2f}.xlsx",
+            "application/vnd.ms-excel"
+        )
+        # Add pie chart comparison
+        st.subheader("Metrics Comparison")
+        if metrics_data:
+            fig = go.Figure()
+            
+            # Layout for side by side pie charts
+            for i, metric in enumerate(metrics_data):
+                fig.add_trace(go.Pie(
+                    labels=['Similar', 'Different'],
+                    values=[metrics_data[metric]['similar'], metrics_data[metric]['different']],
+                    name=metric.capitalize(),
+                    title=f"{metric.capitalize()} Similarity",
+                    domain={'row': 0, 'column': i},
+                    textinfo='percent+label',
+                    hole=.3,
+                    marker=dict(
+                        colors=['rgb(67, 160, 71)', 'rgb(211, 47, 47)']  # Green for Similar, Red for Different
+                    )
+                ))
+            
+            fig.update_layout(
+                title=f"Similarity Comparison (Threshold: {similarity_threshold}, Confidence: {confidence_threshold:.2f})",
+                grid={'rows': 1, 'columns': 2},
+                annotations=[
+                    dict(text="Cosine", x=0.18, y=0.5, showarrow=False, font_size=16),
+                    dict(text="Jaccard", x=0.82, y=0.5, showarrow=False, font_size=16)
+                ]
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Combined metrics download
+            combined_data = []
+            for metric in metrics:
+                results = self.db.query_by_similarity(metric=metric)
+                if not results.empty:
+                    results = results[results['confidence'] >= confidence_threshold]
+                    results['metric'] = metric
+                    results['is_similar'] = results['similarity_score'] >= similarity_threshold
+                    combined_data.append(results)
+            
+            if combined_data:
+                combined_df = pd.concat(combined_data)
+                csv = combined_df.to_csv(index=False)
+                st.download_button(
+                    "Download Combined Metrics Report",
+                    csv,
+                    f"combined_metrics_report_{similarity_threshold}_{confidence_threshold:.2f}.csv",
+                    "text/csv"
+                )
+
+    def generate_full_report(self, similarity_threshold: float, confidence_threshold: float, metrics_data: dict):
+        buffer = io.BytesIO()
+        
+        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+            # Executive Summary Sheet
+            summary_data = {
+                'Report Generated': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'Similarity Threshold': similarity_threshold,
+                'Confidence Threshold': confidence_threshold
+            }
+            pd.DataFrame([summary_data]).to_excel(writer, sheet_name='Executive_Summary', index=False)
+            
+            # Metrics Comparison Sheet
+            comparison_data = []
+            for metric in metrics_data:
+                comparison_data.append({
+                    'Metric': metric.capitalize(),
+                    'Similar Documents': metrics_data[metric]['similar'],
+                    'Different Documents': metrics_data[metric]['different'],
+                    'Total Documents': metrics_data[metric]['similar'] + metrics_data[metric]['different'],
+                    'Similar Percentage': (metrics_data[metric]['similar'] / (metrics_data[metric]['similar'] + metrics_data[metric]['different'])) * 100
+                })
+            pd.DataFrame(comparison_data).to_excel(writer, sheet_name='Metrics_Comparison', index=False)
+            
+            # Detailed Results Sheets
+            for metric in ['cosine', 'jaccard']:
+                results = self.db.query_by_similarity(metric=metric)
+                if not results.empty:
+                    results = results[results['confidence'] >= confidence_threshold]
+                    results['is_similar'] = results['similarity_score'] >= similarity_threshold
+                    
+                    # Create detailed stats
+                    data = results['similarity_score']
+                    stats = {
+                        'Mean': data.mean(),
+                        'Median': data.median(),
+                        'Std Dev': data.std(),
+                        'Skewness': data.skew(),
+                        'Kurtosis': data.kurtosis(),
+                        'Min': data.min(),
+                        'Max': data.max(),
+                        '25th Percentile': data.quantile(0.25),
+                        '75th Percentile': data.quantile(0.75),
+                        'Above Threshold': (data >= similarity_threshold).mean() * 100,
+                        'Below Threshold': (data < similarity_threshold).mean() * 100,
+                        'Similar Count': sum(results['is_similar']),
+                        'Different Count': sum(~results['is_similar']),
+                        'Total Documents': len(results),
+                        'Average Confidence': results['confidence'].mean()
+                    }
+                    
+                    # Write to sheet
+                    sheet_name = f'{metric.capitalize()}_Analysis'
+                    stats_df = pd.DataFrame.from_dict(stats, orient='index', columns=['Value'])
+                    stats_df.to_excel(writer, sheet_name=sheet_name)
+                    
+                    # Write full results
+                    results.to_excel(writer, sheet_name=f'{metric}_Full_Results', index=False)
+        
+        return buffer
 
     def compute_correlation_matrix(self):
         """
@@ -167,108 +380,7 @@ class DashboardApp:
                 st.warning(f"No similar texts found for {metric} metric. Load data first.")
         except Exception as e:
             st.error(f"Error showing top similar {metric} texts: {str(e)}")
-    def show_comprehensive_report(self):
-        batch_stats = self.db.get_batch_stats()
-        processed_metrics = batch_stats['metric'].dropna().unique().tolist() if not batch_stats.empty else ['cosine']
-        
-        if not processed_metrics:
-            processed_metrics = ['cosine']
-        
-        st.header("Comprehensive Similarity Analysis Reports")
-        
-        for metric in processed_metrics:
-            st.subheader(f"{metric.capitalize()} Similarity Report")
-            results = self.db.query_by_similarity(metric=metric)
-            
-            if results.empty:
-                st.warning(f"No {metric} similarity results found.")
-                continue
-            
-            # Get status for specific metric
-            status = self.db.get_processing_status(metric=metric)
-            status['total_rows'] = 443249  # Fixed total documents
-            
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.metric("Total Documents", status['total_rows'])
-                st.metric("Processed Documents", status['total_processed'])
-            with col2:
-                progress = (status['total_processed'] / status['total_rows']) * 100
-                st.metric("Progress", f"{progress:.1f}%")
-                st.metric("Status", status['status'].title())
-            with col3:
-                st.metric("Remaining Documents", status['total_rows'] - status['total_processed'])
-                st.metric("Current Batch", status.get('current_batch', 'N/A'))
-            
-            data = results['similarity_score']
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                fig_violin = go.Figure(data=go.Violin(
-                    y=data,
-                    name=metric.capitalize(),
-                    box_visible=True,
-                    meanline_visible=True
-                ))
-                fig_violin.update_layout(
-                    title=f"{metric.capitalize()} Similarity Distribution",
-                    yaxis_title="Similarity Score"
-                )
-                st.plotly_chart(fig_violin, use_container_width=True)
-            
-            with col2:
-                thresholds = np.linspace(0, 1, 20)
-                ratios = [(data >= threshold).mean() for threshold in thresholds]
-                
-                fig_threshold = go.Figure(data=go.Scatter(
-                    x=thresholds,
-                    y=ratios,
-                    mode='lines+markers',
-                    name=metric.capitalize()
-                ))
-                fig_threshold.update_layout(
-                    title="Document Ratio vs Threshold",
-                    xaxis_title="Threshold",
-                    yaxis_title="Ratio of Documents"
-                )
-                st.plotly_chart(fig_threshold, use_container_width=True)
-            
-            st.subheader("Detailed Statistics")
-            stats = {
-                'Mean': data.mean(),
-                'Median': data.median(),
-                'Std Dev': data.std(),
-                'Skewness': data.skew(),
-                'Kurtosis': data.kurtosis(),
-                'Min': data.min(),
-                'Max': data.max(),
-                '25th Percentile': data.quantile(0.25),
-                '75th Percentile': data.quantile(0.75),
-                'Above 0.8': (data >= 0.8).mean(),
-                'Below 0.2': (data < 0.2).mean()
-            }
-            
-            st.table(pd.DataFrame.from_dict(stats, orient='index', columns=[metric.capitalize()]))
-            
-            st.subheader("Export Options")
-            
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                results.to_excel(writer, sheet_name=f'{metric}_details', index=False)
-                pd.DataFrame.from_dict(stats, orient='index', columns=[metric.capitalize()]).to_excel(writer, sheet_name='Summary_Stats')
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button(
-                    label=f"Download {metric.capitalize()} Report (Excel)",
-                    data=buffer.getvalue(),
-                    file_name=f"{metric}_similarity_report.xlsx",
-                    mime="application/vnd.ms-excel"
-                )
-            
-            st.markdown("---")
+    
     def generate_summary_text(self, detailed_stats: Dict, correlation_matrix: pd.DataFrame) -> str:
         """Generate summary text report"""
         summary = ["SIMILARITY ANALYSIS SUMMARY REPORT", "=" * 30, ""]
