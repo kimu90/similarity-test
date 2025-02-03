@@ -272,7 +272,8 @@ class DatabaseManager:
             session.close()
 
     def query_by_similarity(self, min_score: float = 0.0, max_score: float = 1.0,
-                             metric: str = 'cosine', latest_only: bool = False) -> pd.DataFrame:
+                         min_confidence: float = 0.0, max_confidence: float = 1.0,
+                         metric: str = 'cosine', latest_only: bool = False) -> pd.DataFrame:
         try:
             base_query = """
                 SELECT 
@@ -280,6 +281,7 @@ class DatabaseManager:
                 FROM classifications
                 WHERE metric = :metric
                 AND similarity_score BETWEEN :min_score AND :max_score
+                AND confidence BETWEEN :min_confidence AND :max_confidence
             """
             
             if latest_only:
@@ -300,7 +302,13 @@ class DatabaseManager:
                 return pd.read_sql(
                     sa.text(query), 
                     connection, 
-                    params={'metric': metric, 'min_score': min_score, 'max_score': max_score}
+                    params={
+                        'metric': metric, 
+                        'min_score': min_score, 
+                        'max_score': max_score,
+                        'min_confidence': min_confidence,
+                        'max_confidence': max_confidence
+                    }
                 )
                 
         except Exception as e:

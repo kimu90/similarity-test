@@ -1,21 +1,18 @@
-version: '3.8'
-
 services:
   webapp:
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile
     ports:
       - "8501:8501"
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
-      - ./data/app:/app/data
+      - .:/app
+      - ./data:/app/data
     depends_on:
       - db
     environment:
       - DATABASE_URL=postgresql://user:password@db:5432/similarity_db
       - PYTHONPATH=/app
-
   db:
     image: pgvector/pgvector:pg14
     ports:
@@ -25,13 +22,9 @@ services:
       - POSTGRES_PASSWORD=password
       - POSTGRES_DB=similarity_db
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ./data/postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U user -d similarity_db"]
       interval: 5s
       timeout: 5s
       retries: 5
-
-volumes:
-  postgres_data:
-  data_volume:
