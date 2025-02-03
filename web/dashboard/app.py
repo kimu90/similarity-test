@@ -68,7 +68,7 @@ class DashboardApp:
                 format_func=lambda x: x.capitalize()
             )
             threshold = st.sidebar.slider(f"{selected_metric.capitalize()} Similarity Threshold", 0.0, 1.0, 0.8, 0.05)
-            batch_size = st.sidebar.number_input("Batch Size", 10, 1000, 100)
+            batch_size = st.sidebar.number_input("Batch Size", 100, 8000, 2500)
             
             # Load data button
             if st.sidebar.button("Load and Process New Data"):
@@ -210,27 +210,6 @@ class DashboardApp:
         except Exception as e:
             st.error(f"Error showing distribution: {str(e)}")
 
-    def show_classification_metrics(self, threshold: float, metric: str):
-        """Display classification metrics"""
-        try:
-            results = self.db.query_by_similarity(metric=metric)
-            if not results.empty:
-                predictions = results['similarity_score'] >= threshold
-                metrics = {
-                    "Total Processed": len(results),
-                    "Similar Texts": sum(predictions),
-                    "Different Texts": len(predictions) - sum(predictions),
-                    f"Avg {metric.capitalize()} Score": results['similarity_score'].mean(),
-                    "Avg Confidence": results['confidence'].mean()
-                }
-                
-                cols = st.columns(len(metrics))
-                for col, (metric_name, value) in zip(cols, metrics.items()):
-                    col.metric(metric_name, f"{value:.2f}")
-            else:
-                st.warning("No classification data available. Load data first.")
-        except Exception as e:
-            st.error(f"Error showing metrics: {str(e)}")
 
     def show_top_similar_texts(self, metric: str):
         """Display most similar texts"""
@@ -251,62 +230,62 @@ class DashboardApp:
         except Exception as e:
             st.error(f"Error showing top similar texts: {str(e)}")
 
-    def show_results_table(self, threshold: float, metric: str):
-        """Display results table"""
-        try:
-            results = self.db.query_by_similarity(metric=metric)
-            if not results.empty:
-                # Add classification column
-                results['is_similar'] = results['similarity_score'] >= threshold
-                
-                # Show filtered dataframe
-                st.dataframe(
-                    results[[
-                        'text_id', 
-                        'similarity_score',
-                        'confidence',
-                        'is_similar'
-                    ]],
-                    use_container_width=True,
-                    height=400
-                )
-                
-                # Add download button
-                csv = results.to_csv(index=False)
-                st.download_button(
-                    "Download Results CSV",
-                    csv,
-                    "similarity_results.csv",
-                    "text/csv",
-                    key='download-csv'
-                )
-            else:
-                st.warning("No results available. Load data first.")
-        except Exception as e:
-            st.error(f"Error showing results table: {str(e)}")
-
     def show_comprehensive_report(self):
-        correlation_matrix = self.compute_correlation_matrix()  # Make sure this method exists
-
         """Generate comprehensive analysis report"""
+        correlation_matrix = self.compute_correlation_matrix()
         st.header("Comprehensive Similarity Analysis Report")
-
+        
+        # Overall Statistics Section
+        total_processed = self.db.get_total_processed_count()
+        batch_stats = self.db.get_batch_stats()
+        true_embeddings, true_ids = self.similarity.get_true_embeddings_with_ids()
+        
+        st.metric("Total Documents Processed (Cumulative)", total_processed, 
+                help="Total number of documents processed across all batches")
+                
         # Document Statistics Section
         st.subheader("1. Document Statistics")
         col1, col2, col3 = st.columns(3)
         
-        true_embeddings, true_ids = self.similarity.get_true_embeddings_with_ids()
-        new_embeddings, new_ids = self.similarity.get_new_embeddings_with_ids()
-        
         with col1:
             st.metric("Reference Documents", len(true_embeddings))
-            st.metric("New Documents", len(new_embeddings))
+            if not batch_stats.empty:
+                st.metric("Documents by Batch Sum", batch_stats['doc_count'].sum())
         with col2:
             st.metric("Embedding Dimension", true_embeddings.shape[1])
-            st.metric("Total Comparisons", len(true_embeddings) * len(new_embeddings))
+            st.metric("Number of Batches", len(batch_stats))
         with col3:
-            st.metric("Total Documents", len(true_embeddings) + len(new_embeddings))
+            st.metric("Total Documents", total_processed + len(true_embeddings))
             st.metric("Processing Time", f"{time.time() - self.start_time:.2f}s")
+
+        # Batch History
+        st.subheader("Batch Processing History")
+        if not batch_stats.empty:
+            batch_stats['duration'] = (batch_stats['batch_end'] - batch_stats['batch_start']).dt.total_seconds()
+            st.dataframe(
+                batch_stats[[
+                    'batch_id',
+                    'doc_count',
+                    'batch_start',
+                    'batch_end',
+                    'duration'
+                ]].sort_values('batch_start', ascending=False),
+                use_container_width=True
+            )
+            
+            # Batch processing chart
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                x=batch_stats['batch_start'],
+                y=batch_stats['doc_count'],
+                name='Documents per Batch'
+            ))
+            fig.update_layout(
+                title="Documents Processed per Batch",
+                xaxis_title="Batch Date",
+                yaxis_title="Number of Documents"
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
         # Get results for all metrics
         metrics = ['cosine', 'jaccard', 'lcs']
@@ -424,6 +403,9 @@ class DashboardApp:
                         writer, 
                         sheet_name=f'{metric}_details'
                     )
+            
+            # Add batch statistics
+            batch_stats.to_excel(writer, sheet_name='Batch_History')
 
         col1, col2 = st.columns(2)
         with col1:
@@ -443,6 +425,82 @@ class DashboardApp:
                 file_name="summary_report.txt",
                 mime="text/plain"
             )
+
+    def show_classification_metrics(self, threshold: float, metric: str):
+        """Display classification metrics"""
+        try:
+            total_all_time = self.db.get_total_processed_count()
+            current_results = self.db.query_by_similarity(metric=metric, latest_only=True)
+            batch_stats = self.db.get_batch_stats()
+            
+            # Display cumulative metrics
+            st.subheader("Cumulative Statistics")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.metric("Total Documents Processed (All Time)", total_all_time)
+                if not batch_stats.empty:
+                    st.metric("Total Batches", len(batch_stats))
+            
+            with col2:
+                if not batch_stats.empty:
+                    st.metric("Last Batch Size", batch_stats.iloc[0]['doc_count'])
+                    st.metric("Last Batch Date", batch_stats.iloc[0]['batch_end'].strftime('%Y-%m-%d %H:%M'))
+            
+            # Current batch metrics
+            st.subheader("Current Analysis")
+            if not current_results.empty:
+                predictions = current_results['similarity_score'] >= threshold
+                metrics = {
+                    "Similar Texts": sum(predictions),
+                    "Different Texts": len(predictions) - sum(predictions),
+                    f"Avg {metric.capitalize()} Score": current_results['similarity_score'].mean(),
+                    "Avg Confidence": current_results['confidence'].mean()
+                }
+                
+                cols = st.columns(len(metrics))
+                for col, (metric_name, value) in zip(cols, metrics.items()):
+                    col.metric(metric_name, f"{value:.2f}")
+            else:
+                st.warning("No classification data available. Load data first.")
+        except Exception as e:
+            st.error(f"Error showing metrics: {str(e)}")
+
+
+    def show_results_table(self, threshold: float, metric: str):
+        """Display results table"""
+        try:
+            # Get latest results for each document
+            results = self.db.query_by_similarity(metric=metric, latest_only=True)
+            
+            if not results.empty:
+                results['is_similar'] = results['similarity_score'] >= threshold
+                
+                st.dataframe(
+                    results[[
+                        'text_id',
+                        'similarity_score',
+                        'confidence',
+                        'is_similar',
+                        'batch_id',
+                        'created_at'
+                    ]].sort_values('created_at', ascending=False),
+                    use_container_width=True,
+                    height=400
+                )
+                
+                csv = results.to_csv(index=False)
+                st.download_button(
+                    "Download Results CSV",
+                    csv,
+                    "similarity_results.csv",
+                    "text/csv",
+                    key='download-csv'
+                )
+            else:
+                st.warning("No results available. Load data first.")
+        except Exception as e:
+            st.error(f"Error showing results table: {str(e)}")
 
 
     def generate_summary_text(self, detailed_stats: Dict, correlation_matrix: pd.DataFrame) -> str:

@@ -117,7 +117,7 @@ if __name__ == "__main__":
     
     # Load both datasets
     true_df = loader.load_true_set()
-    new_df = loader.load_new_texts(batch_size=100)
+    new_df = loader.load_new_texts(batch_size=10000)
     
     # Print stats
     print("\nTRUE Set Stats:")

@@ -61,7 +61,7 @@ class EmbeddingGenerator:
                    texts: List[str],
                    lens_ids: List[str],
                    is_true_set: bool = False,
-                   batch_size: int = 256) -> np.ndarray:
+                   batch_size: int = 1024) -> np.ndarray:
         """
         Generate embeddings for a batch of texts
         

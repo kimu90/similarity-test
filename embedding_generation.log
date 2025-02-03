@@ -1,0 +1,45 @@
+2025-02-03 13:13:28,552 - INFO - Starting processing from index 0
+2025-02-03 13:13:28,552 - INFO - Starting processing from index 0
+2025-02-03 13:13:28,552 - INFO - Starting processing from index 0
+2025-02-03 13:13:28,553 - INFO - Total batches to process: 1
+2025-02-03 13:13:28,553 - INFO - Total batches to process: 1
+2025-02-03 13:13:28,553 - INFO - Total batches to process: 1
+2025-02-03 13:13:29,552 - INFO - Processing completed. Statistics:
+2025-02-03 13:13:29,552 - INFO - Processing completed. Statistics:
+2025-02-03 13:13:29,552 - INFO - Processing completed. Statistics:
+2025-02-03 13:13:29,554 - INFO - Total processed: 100
+2025-02-03 13:13:29,554 - INFO - Total processed: 100
+2025-02-03 13:13:29,554 - INFO - Total processed: 100
+2025-02-03 13:13:29,558 - INFO - Failed texts: 0
+2025-02-03 13:13:29,558 - INFO - Failed texts: 0
+2025-02-03 13:13:29,558 - INFO - Failed texts: 0
+2025-02-03 13:13:29,558 - INFO - Start time: 2025-02-03T13:13:28.552499
+2025-02-03 13:13:29,558 - INFO - Start time: 2025-02-03T13:13:28.552499
+2025-02-03 13:13:29,558 - INFO - Start time: 2025-02-03T13:13:28.552499
+2025-02-03 13:13:29,559 - INFO - End time: 2025-02-03T13:13:29.552104
+2025-02-03 13:13:29,559 - INFO - End time: 2025-02-03T13:13:29.552104
+2025-02-03 13:13:29,559 - INFO - End time: 2025-02-03T13:13:29.552104
+2025-02-03 13:13:29,563 - INFO - Starting processing from index 1024
+2025-02-03 13:13:29,563 - INFO - Starting processing from index 1024
+2025-02-03 13:13:29,563 - INFO - Starting processing from index 1024
+2025-02-03 13:13:29,566 - INFO - Total batches to process: 0
+2025-02-03 13:13:29,566 - INFO - Total batches to process: 0
+2025-02-03 13:13:29,566 - INFO - Total batches to process: 0
+2025-02-03 13:13:29,569 - INFO - Processing completed. Statistics:
+2025-02-03 13:13:29,569 - INFO - Processing completed. Statistics:
+2025-02-03 13:13:29,569 - INFO - Processing completed. Statistics:
+2025-02-03 13:13:29,570 - INFO - Total processed: 100
+2025-02-03 13:13:29,570 - INFO - Total processed: 100
+2025-02-03 13:13:29,570 - INFO - Total processed: 100
+2025-02-03 13:13:29,571 - INFO - Failed texts: 0
+2025-02-03 13:13:29,571 - INFO - Failed texts: 0
+2025-02-03 13:13:29,571 - INFO - Failed texts: 0
+2025-02-03 13:13:29,573 - INFO - Start time: 2025-02-03T13:13:29.563740
+2025-02-03 13:13:29,573 - INFO - Start time: 2025-02-03T13:13:29.563740
+2025-02-03 13:13:29,573 - INFO - Start time: 2025-02-03T13:13:29.563740
+2025-02-03 13:13:29,577 - INFO - End time: 2025-02-03T13:13:29.569020
+2025-02-03 13:13:29,577 - INFO - End time: 2025-02-03T13:13:29.569020
+2025-02-03 13:13:29,577 - INFO - End time: 2025-02-03T13:13:29.569020
+2025-02-03 13:13:29,579 - ERROR - No embeddings were generated
+2025-02-03 13:13:29,579 - ERROR - No embeddings were generated
+2025-02-03 13:13:29,579 - ERROR - No embeddings were generated
