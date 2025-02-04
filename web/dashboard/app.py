@@ -57,7 +57,7 @@ class DashboardApp:
             "Confidence Threshold", 
             0.0, 1.0, 0.5, 0.05
         )
-        batch_size = st.sidebar.number_input("Batch Size", 100, 8000, 2500)
+        batch_size = st.sidebar.number_input("Batch Size", 1000, 80000, 25000)
         
         if st.sidebar.button("Load and Process New Data"):
             with st.spinner("Loading and processing data..."):
@@ -107,10 +107,10 @@ class DashboardApp:
                 with col2:
                     progress = (status['total_processed'] / status['total_rows']) * 100
                     st.metric("Progress", f"{progress:.1f}%")
-                    st.metric("Status", status['status'].title())
                 with col3:
                     st.metric("Remaining Documents", status['total_rows'] - status['total_processed'])
-                    st.metric("Current Batch", status.get('current_batch', 'N/A'))
+                    similar_docs = len(results[results['similarity_score'] >= similarity_threshold])
+                    st.metric("Similar Documents Count", similar_docs)
 
                 # Store similar/different counts for pie chart
                 similar_count = len(results[results['similarity_score'] >= similarity_threshold])

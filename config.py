@@ -14,7 +14,7 @@ config = {
         'port': 5432
     },
     'data': {
-        'batch_size': 2500
+        'batch_size': 25000
     },
     'model_name': 'all-MiniLM-L6-v2',
     'similarity_threshold': 0.8,
