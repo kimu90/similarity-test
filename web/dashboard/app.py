@@ -516,25 +516,32 @@ class DashboardApp:
 
     def process_new_data(self, batch_size: int, selected_metric: str):
         try:
+            TOTAL_TARGET = 443249  # Fixed total documents target
             true_df = self.loader.load_true_set()
             
             status = self.db.get_processing_status(metric=selected_metric)
             
+            # Check if already at or exceeding target
+            if status['total_processed'] >= TOTAL_TARGET:
+                st.warning(f"Already processed maximum {TOTAL_TARGET} documents")
+                return
+            
             if status['total_rows'] == 0:
                 new_df = self.loader.load_new_texts(batch_size, resume=False, selected_metric=selected_metric)
-                total_rows = len(new_df)
-                
                 self.db.update_processing_status(
                     0, 
-                    total_rows, 
+                    TOTAL_TARGET, 
                     'in_progress', 
                     metric=selected_metric
                 )
-                
                 status = self.db.get_processing_status(metric=selected_metric)
             
+            # Calculate remaining documents and adjust batch size if needed
+            remaining = TOTAL_TARGET - status['total_processed']
+            current_batch_size = min(batch_size, remaining)
+            
             progress_bar = st.progress(0)
-            st.write(f"Starting from position: {status['total_processed']}/{status['total_rows']}")
+            st.write(f"Starting from position: {status['total_processed']}/{TOTAL_TARGET}")
             
             cleaned_true = self.cleaner.batch_process(true_df['text'].tolist())
             true_embeddings = self.generator.batch_generate(
@@ -544,7 +551,7 @@ class DashboardApp:
             )
             
             try:
-                new_df = self.loader.load_new_texts(batch_size, resume=True, selected_metric=selected_metric)
+                new_df = self.loader.load_new_texts(current_batch_size, resume=True, selected_metric=selected_metric)
                 if not new_df.empty:
                     cleaned_new = self.cleaner.batch_process(new_df['text'].tolist())
                     new_embeddings = self.generator.batch_generate(
@@ -565,32 +572,46 @@ class DashboardApp:
                         metric=selected_metric
                     )
                     
-                    new_total_processed = status['total_processed'] + len(new_df)
-                    progress = min(new_total_processed / max(status['total_rows'], 1), 1.0)
+                    new_total_processed = min(status['total_processed'] + len(new_df), TOTAL_TARGET)
+                    progress = new_total_processed / TOTAL_TARGET
                     progress_bar.progress(progress)
                     
-                    st.success(f"Processed {len(new_df)} documents ({new_total_processed}/{status['total_rows']} total)")
+                    st.success(f"Processed {len(new_df)} documents ({new_total_processed}/{TOTAL_TARGET} total)")
                     
-                    status_label = 'completed' if new_total_processed >= status['total_rows'] else 'in_progress'
+                    # Update status based on whether we've reached target
+                    status_label = 'completed' if new_total_processed >= TOTAL_TARGET else 'in_progress'
                     self.db.update_processing_status(
                         new_total_processed,
-                        status['total_rows'],
+                        TOTAL_TARGET,
                         status_label,
                         metric=selected_metric
                     )
-                else:
-                    st.info("All documents processed!")
-                    self.db.update_processing_status(
-                        status['total_rows'],
-                        status['total_rows'],
-                        'completed',
-                        metric=selected_metric
-                    )
                     
+                    # If we've reached target, show completion message
+                    if new_total_processed >= TOTAL_TARGET:
+                        st.info(f"Completed processing {TOTAL_TARGET} documents")
+                        
+                else:
+                    st.info("No more documents to process!")
+                    if status['total_processed'] < TOTAL_TARGET:
+                        self.db.update_processing_status(
+                            status['total_processed'],
+                            TOTAL_TARGET,
+                            'in_progress',
+                            metric=selected_metric
+                        )
+                    else:
+                        self.db.update_processing_status(
+                            TOTAL_TARGET,
+                            TOTAL_TARGET,
+                            'completed',
+                            metric=selected_metric
+                        )
+                        
             except Exception as e:
                 self.db.update_processing_status(
                     status['total_processed'],
-                    status['total_rows'],
+                    TOTAL_TARGET,
                     'failed',
                     metric=selected_metric
                 )
@@ -600,7 +621,6 @@ class DashboardApp:
             st.error(f"Error processing data: {str(e)}")
             st.error("Detailed Traceback:")
             st.code(traceback.format_exc())
-
 
     def show_results_table(self, threshold: float, metric: str):
         """Display results table for specific metric"""

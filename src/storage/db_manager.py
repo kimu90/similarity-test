@@ -101,8 +101,8 @@ class DatabaseManager:
         try:
             query = """
                 SELECT 
-                    SUM(last_processed_total_processed) AS total_processed,
-                    SUM(total_rows) AS total_rows,
+                    MAX(last_processed_total_processed) AS total_processed,
+                    MAX(total_rows) AS total_rows,
                     MAX(status) AS status,
                     MAX(latest_batch_id) AS latest_latest_batch_id,
                     metric
