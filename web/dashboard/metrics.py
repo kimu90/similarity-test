@@ -5,6 +5,7 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from typing import Dict, List
 import numpy as np
+
 import pandas as pd
 from sklearn.metrics import precision_recall_fscore_support, roc_curve, auc
 import logging
@@ -140,38 +141,57 @@ class MetricsCalculator:
 
 
 def generate_pdf_report(results_data, metrics_data, status_data, similarity_threshold, confidence_threshold):
-    """Generate PDF report with all visualizations and data"""
+    """Generate PDF report with all visualizations and detailed statistics"""
+    temp_files = []
+    
     try:
         buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), rightMargin=50, leftMargin=50, topMargin=50, bottomMargin=50)
+        doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), 
+                            rightMargin=50, leftMargin=50, 
+                            topMargin=50, bottomMargin=50)
         elements = []
         styles = getSampleStyleSheet()
 
-        # Add title
+        # Title
         title_style = ParagraphStyle(
             'CustomTitle',
             parent=styles['Title'],
             fontSize=24,
             spaceAfter=30
         )
-        title = Paragraph(f"Comprehensive Analysis Report<br/>Similarity: {similarity_threshold}, Confidence: {confidence_threshold}",
-                         title_style)
+        title = Paragraph(
+            f"Comprehensive Analysis Report<br/>"
+            f"Similarity: {similarity_threshold}, "
+            f"Confidence: {confidence_threshold}",
+            title_style
+        )
         elements.append(title)
 
         # Add timestamp
-        timestamp = Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", 
-                             styles['Normal'])
+        timestamp = Paragraph(
+            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", 
+            styles['Normal']
+        )
         elements.append(timestamp)
         elements.append(Spacer(1, 20))
 
+        # Analysis Period
+        period = Paragraph(
+            f"Analysis Period: {datetime.now().strftime('%Y-%m-%d')}",
+            styles['Normal']
+        )
+        elements.append(period)
+        elements.append(Spacer(1, 20))
+
         for metric in metrics_data:
-            # Add metric section
-            elements.append(Paragraph(f"{metric.capitalize()} Similarity Analysis", styles['Heading1']))
+            # Metric section header
+            elements.append(Paragraph(f"{metric.capitalize()} Similarity Analysis", 
+                                   styles['Heading1']))
             elements.append(Spacer(1, 10))
 
-            # Add metrics table
+            # Basic metrics table
             status = status_data[metric]
-            table_data = [
+            basic_metrics = [
                 ['Metric', 'Value'],
                 ['Similar Documents', f"{metrics_data[metric]['similar']:,}"],
                 ['Different Documents', f"{metrics_data[metric]['different']:,}"],
@@ -179,55 +199,106 @@ def generate_pdf_report(results_data, metrics_data, status_data, similarity_thre
                 ['Progress', f"{(status['total_processed'] / status['total_rows'] * 100):.1f}%"]
             ]
             
-            metrics_table = Table(table_data, colWidths=[2*inch, 2*inch])
+            metrics_table = Table(basic_metrics, colWidths=[3*inch, 3*inch])
             metrics_table.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, 0), 12),
-                ('GRID', (0, 0), (-1, -1), 1, colors.black)
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey])
             ]))
             elements.append(metrics_table)
             elements.append(Spacer(1, 20))
 
+            # Detailed Statistics Table
+            elements.append(Paragraph("Detailed Statistics", styles['Heading2']))
+            elements.append(Spacer(1, 10))
+            
+            # Get statistics from results
+            results = results_data[metric].get('results', pd.DataFrame())
+            if not results.empty:
+                stats = {
+                    'Mean': results['similarity_score'].mean(),
+                    'Median': results['similarity_score'].median(),
+                    'Std Dev': results['similarity_score'].std(),
+                    'Min': results['similarity_score'].min(),
+                    'Max': results['similarity_score'].max(),
+                    '25th Percentile': results['similarity_score'].quantile(0.25),
+                    '75th Percentile': results['similarity_score'].quantile(0.75),
+                    'Above 0.8': (results['similarity_score'] >= 0.8).mean(),
+                    'Below 0.2': (results['similarity_score'] < 0.2).mean()
+                }
+                
+                detailed_stats = [[k, f"{v:.4f}"] for k, v in stats.items()]
+                stats_table = Table([['Statistic', f'{metric.capitalize()} Value']] + detailed_stats, 
+                                  colWidths=[3*inch, 3*inch])
+                stats_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 12),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey])
+                ]))
+                elements.append(stats_table)
+                elements.append(Spacer(1, 20))
+
             try:
                 # Add visualizations
-                fig_dist = results_data[metric]['fig_dist']
-                img_bytes_dist = fig_dist.to_image(format="png", engine="kaleido")
-                
-                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_dist:
-                    tmp_dist.write(img_bytes_dist)
-                    tmp_dist.flush()
-                    img_dist = Image(tmp_dist.name, width=4*inch, height=3*inch)
-                    elements.append(img_dist)
-                    tmp_dist.close()
-                    os.unlink(tmp_dist.name)
-
-                fig_threshold = results_data[metric]['fig_threshold']
-                img_bytes_threshold = fig_threshold.to_image(format="png", engine="kaleido")
-                
-                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_threshold:
-                    tmp_threshold.write(img_bytes_threshold)
-                    tmp_threshold.flush()
-                    img_threshold = Image(tmp_threshold.name, width=4*inch, height=3*inch)
-                    elements.append(img_threshold)
-                    tmp_threshold.close()
-                    os.unlink(tmp_threshold.name)
-                
+                for fig_name, fig in [
+                    ('Distribution', results_data[metric]['fig_dist']),
+                    ('Threshold', results_data[metric]['fig_threshold'])
+                ]:
+                    img_bytes = fig.to_image(format="png", engine="kaleido")
+                    
+                    temp_file = tempfile.NamedTemporaryFile(
+                        suffix='.png',
+                        delete=False,
+                        dir='/tmp'
+                    )
+                    temp_files.append(temp_file.name)
+                    
+                    try:
+                        temp_file.write(img_bytes)
+                        temp_file.flush()
+                        os.fsync(temp_file.fileno())
+                        temp_file.close()
+                        
+                        if os.path.exists(temp_file.name) and os.path.getsize(temp_file.name) > 0:
+                            img = Image(temp_file.name, width=6*inch, height=4*inch)
+                            elements.append(Paragraph(f"{fig_name} Analysis", styles['Heading2']))
+                            elements.append(img)
+                            elements.append(Spacer(1, 10))
+                    except Exception as e:
+                        logging.error(f"Error processing {fig_name} figure: {str(e)}")
+                        continue
+                    
             except Exception as e:
-                print(f"Error adding visualizations for {metric}: {str(e)}")
+                logging.error(f"Error adding visualizations for {metric}: {str(e)}")
             
-            elements.append(Spacer(1, 20))
+            elements.append(Spacer(1, 30))
 
         # Build the PDF
         doc.build(elements)
         buffer.seek(0)
         return buffer
+        
     except Exception as e:
-        print(f"Error generating PDF report: {str(e)}")
+        logging.error(f"Error generating PDF report: {str(e)}")
         traceback.print_exc()
         return None
+        
+    finally:
+        # Clean up temporary files
+        for temp_file in temp_files:
+            try:
+                if os.path.exists(temp_file):
+                    os.unlink(temp_file)
+            except Exception as e:
+                logging.error(f"Error cleaning up temp file {temp_file}: {str(e)}")
 
 def show_comprehensive_report(similarity_threshold: float, confidence_threshold: float, db):
     """Display comprehensive similarity analysis report with appropriate download options"""
