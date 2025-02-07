@@ -49,6 +49,20 @@ class SimilarityAnalyzer:
         """
         return float(cosine_similarity(vec1.reshape(1, -1), vec2.reshape(1, -1)))
 
+    def batch_concatenated_cosine(self, vec1: np.ndarray, vec2: np.ndarray) -> np.ndarray:
+        """
+        Calculate cosine similarity between vectors
+        
+        Args:
+            vec1: First embedding vector array
+            vec2: Second embedding vector array
+        
+        Returns:
+            Similarity score array
+        """
+        # Already reshaped correctly for batch processing, no reshape needed
+        return cosine_similarity(vec1, vec2)
+
     def compute_correlation_matrix(self):
         """
         Compute a correlation matrix between true set and new texts
@@ -189,6 +203,8 @@ class SimilarityAnalyzer:
             self.logger.error(f"Error retrieving new embeddings: {str(e)}")
             return np.array([]), []
 
+    
+
     def batch_similarities(self, new_vecs: np.ndarray, true_vecs: np.ndarray, metric: str = 'cosine') -> np.ndarray:
         """
         Calculate similarities for batches
@@ -228,6 +244,10 @@ class SimilarityAnalyzer:
                     self.calculate_jaccard_similarity(v1, v2)
                     for v2 in true_vecs
                 ] for v1 in new_vecs])
+
+            # Fast path for cosine similarity
+            elif metric == 'concatenated-cosine':
+                return self.batch_concatenated_cosine(new_vecs, true_vecs)
                 
             # Calculate LCS similarity if requested
             elif metric == 'lcs':

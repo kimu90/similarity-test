@@ -45,7 +45,7 @@ class DashboardApp:
         st.sidebar.header("Controls")
         selected_metric = st.sidebar.selectbox(
             "Similarity Metric",
-            ["cosine", "jaccard"],
+            ["cosine", "jaccard", "concatenated-cosine"],
             format_func=lambda x: x.capitalize()
         )
         similarity_threshold = st.sidebar.selectbox(
@@ -53,11 +53,12 @@ class DashboardApp:
             [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
             format_func=lambda x: f"{x:.1f}"
         )
-        confidence_threshold = st.sidebar.slider(
-            "Confidence Threshold", 
-            0.0, 1.0, 0.5, 0.05
-        )
         batch_size = st.sidebar.number_input("Batch Size", 1000, 80000, 25000)
+
+        if st.sidebar.button("Reset Concatenated-Cosine Processing"):
+            with st.spinner("Resetting concatenated-cosine processing status..."):
+                self.db.reset_processing_status()  # No need to specify metric as it defaults to 'concatenated-cosine'
+                st.success("Concatenated-cosine processing status reset successfully")
         
         if st.sidebar.button("Load and Process New Data"):
             with st.spinner("Loading and processing data..."):
@@ -75,32 +76,23 @@ class DashboardApp:
                 self.show_results_table(similarity_threshold, selected_metric)
 
         with report_tab:
-            # Use the standalone show_comprehensive_report function
-            from web.dashboard.metrics import show_comprehensive_report
-            show_comprehensive_report(
-                similarity_threshold=similarity_threshold,
-                confidence_threshold=confidence_threshold,
-                db=self.db  # Pass the database manager instance
-            )
+            self.show_comprehensive_report(similarity_threshold)
 
-    def show_comprehensive_report(similarity_threshold: float, confidence_threshold: float, db):
-        """
-        Display comprehensive similarity analysis report with appropriate download options
-        """
+    def show_comprehensive_report(self, similarity_threshold: float):
+        """Display comprehensive similarity analysis report"""
         try:
-            st.header(f"Comprehensive Analysis Report (Similarity: {similarity_threshold}, Confidence: {confidence_threshold})")
+            st.header(f"Comprehensive Analysis Report (Similarity Threshold: {similarity_threshold})")
             
-            metrics = ['cosine', 'jaccard']
+            metrics = ['cosine', 'jaccard', 'concatenated-cosine']
             metrics_data = {}
             
             for metric in metrics:
                 st.subheader(f"{metric.capitalize()} Similarity Report")
                 
                 # Get results for current metric
-                results = db.query_by_similarity(
+                results = self.db.query_by_similarity(
                     metric=metric,
-                    min_score=similarity_threshold,
-                    min_confidence=confidence_threshold
+                    min_score=similarity_threshold
                 )
                 
                 if results.empty:
@@ -108,24 +100,24 @@ class DashboardApp:
                     continue
 
                 # Get processing status
-                status = db.get_processing_status(metric=metric)
-                status['total_rows'] = 443249  # Total target documents
+                status = self.db.get_processing_status(metric=metric)
+                total_target = 26712 if metric == 'concatenated-cosine' else 443249
+                status['total_rows'] = total_target
                 
                 # Display metrics in columns
-                col1, col2, col3 = st.columns(3)
+                col1, col2 = st.columns(2)
                 with col1:
                     st.metric("Total Documents", status['total_rows'])
                     st.metric("Processed Documents", status['total_processed'])
-                with col2:
                     progress = (status['total_processed'] / status['total_rows']) * 100
                     st.metric("Progress", f"{progress:.1f}%")
-                with col3:
+                with col2:
                     remaining = status['total_rows'] - status['total_processed']
                     st.metric("Remaining Documents", remaining)
                     similar_docs = len(results[results['similarity_score'] >= similarity_threshold])
                     st.metric("Similar Documents", similar_docs)
                 
-                # Store metrics data for later use
+                # Store metrics data
                 metrics_data[metric] = {
                     'similar': len(results[results['similarity_score'] >= similarity_threshold]),
                     'different': len(results[results['similarity_score'] < similarity_threshold])
@@ -135,7 +127,6 @@ class DashboardApp:
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    # Distribution plot
                     fig_dist = go.Figure(data=go.Violin(
                         y=results['similarity_score'],
                         name=metric.capitalize(),
@@ -150,10 +141,9 @@ class DashboardApp:
                     st.plotly_chart(fig_dist, use_container_width=True)
                 
                 with col2:
-                    # Threshold analysis plot
                     thresholds = np.linspace(0, 1, 20)
                     ratios = [(results['similarity_score'] >= threshold).mean() 
-                            for threshold in thresholds]
+                             for threshold in thresholds]
                     
                     fig_threshold = go.Figure(data=go.Scatter(
                         x=thresholds,
@@ -168,120 +158,320 @@ class DashboardApp:
                         height=400
                     )
                     st.plotly_chart(fig_threshold, use_container_width=True)
-                
-                # Detailed statistics
-                st.subheader("Detailed Statistics")
-                stats = {
-                    'Mean': results['similarity_score'].mean(),
-                    'Median': results['similarity_score'].median(),
-                    'Std Dev': results['similarity_score'].std(),
-                    'Min': results['similarity_score'].min(),
-                    'Max': results['similarity_score'].max(),
-                    '25th Percentile': results['similarity_score'].quantile(0.25),
-                    '75th Percentile': results['similarity_score'].quantile(0.75),
-                    'Above 0.8': (results['similarity_score'] >= 0.8).mean(),
-                    'Below 0.2': (results['similarity_score'] < 0.2).mean()
-                }
-                
-                st.table(pd.DataFrame.from_dict(stats, orient='index', 
-                                            columns=[f"{metric.capitalize()} Value"]))
-                
-                # Download raw data as CSV
-                csv = results.to_csv(index=False)
-                st.download_button(
-                    label=f"Download {metric.capitalize()} Raw Data (CSV)",
-                    data=csv,
-                    file_name=f"{metric}_data_{similarity_threshold}_{confidence_threshold}.csv",
-                    mime="text/csv"
-                )
-                
-                st.markdown("---")
-            
-            # Combined metrics comparison
-            if metrics_data:
-                st.subheader("Metrics Comparison")
-                
-                fig = go.Figure()
-                for i, metric in enumerate(metrics_data):
-                    fig.add_trace(go.Pie(
-                        labels=['Similar', 'Different'],
-                        values=[metrics_data[metric]['similar'], 
-                            metrics_data[metric]['different']],
-                        name=metric.capitalize(),
-                        domain={'row': 0, 'column': i},
-                        title=f"{metric.capitalize()} Similarity",
-                        textinfo='percent+label',
-                        hole=.3
-                    ))
-                
-                fig.update_layout(
-                    title=f"Similarity Comparison (Threshold: {similarity_threshold}, "
-                        f"Confidence: {confidence_threshold})",
-                    grid={'rows': 1, 'columns': 2},
-                    height=400
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Combined metrics download
-                combined_data = []
-                for metric in metrics:
-                    results = db.query_by_similarity(
-                        metric=metric,
-                        min_score=similarity_threshold,
-                        min_confidence=confidence_threshold
-                    )
-                    if not results.empty:
-                        results['metric'] = metric
-                        results['is_similar'] = results['similarity_score'] >= similarity_threshold
-                        combined_data.append(results)
-                
-                if combined_data:
-                    combined_df = pd.concat(combined_data)
-                    
-                    # Download combined raw data
-                    csv = combined_df.to_csv(index=False)
-                    st.download_button(
-                        "Download Combined Raw Data (CSV)",
-                        csv,
-                        f"combined_metrics_{similarity_threshold}_{confidence_threshold}.csv",
-                        "text/csv"
-                    )
-                    
-                    # Create a summary DataFrame
-                    summary_df = pd.DataFrame({
-                        'Metric': [],
-                        'Total Documents': [],
-                        'Similar Documents': [],
-                        'Different Documents': [],
-                        'Mean Score': [],
-                        'Median Score': []
-                    })
-                    
-                    for metric in metrics:
-                        metric_data = combined_df[combined_df['metric'] == metric]
-                        summary_df = pd.concat([summary_df, pd.DataFrame({
-                            'Metric': [metric],
-                            'Total Documents': [len(metric_data)],
-                            'Similar Documents': [len(metric_data[metric_data['is_similar']])],
-                            'Different Documents': [len(metric_data[~metric_data['is_similar']])],
-                            'Mean Score': [metric_data['similarity_score'].mean()],
-                            'Median Score': [metric_data['similarity_score'].median()]
-                        })])
-                    
-                    # Download summary as CSV
-                    summary_csv = summary_df.to_csv(index=False)
-                    st.download_button(
-                        "Download Summary Statistics (CSV)",
-                        summary_csv,
-                        f"summary_stats_{similarity_threshold}_{confidence_threshold}.csv",
-                        "text/csv"
-                    )
-        
         except Exception as e:
             st.error(f"Error generating report: {str(e)}")
             st.error("Detailed error:")
             st.code(traceback.format_exc())
+
+    def process_new_data(self, batch_size: int, selected_metric: str):
+        try:
+            # Set different target based on metric
+            if selected_metric == 'concatenated-cosine':
+                TOTAL_TARGET = 26712
+                # Load concatenated true set
+                true_df = self.loader.load_concat_true_set()
+            else:
+                TOTAL_TARGET = 443249
+                # Load regular true set
+                true_df = self.loader.load_true_set()
+            
+            status = self.db.get_processing_status(metric=selected_metric)
+            
+            # Check if already at or exceeding target
+            if status['total_processed'] >= TOTAL_TARGET:
+                st.warning(f"Already processed maximum {TOTAL_TARGET} documents")
+                return
+            
+            if status['total_rows'] == 0:
+                # Load new texts based on metric
+                if selected_metric == 'concatenated-cosine':
+                    new_df = self.loader.load_concat_new_texts(batch_size, resume=False)
+                else:
+                    new_df = self.loader.load_new_texts(batch_size, resume=False, selected_metric=selected_metric)
+                    
+                self.db.update_processing_status(
+                    0, 
+                    TOTAL_TARGET, 
+                    'in_progress', 
+                    metric=selected_metric
+                )
+                status = self.db.get_processing_status(metric=selected_metric)
+            
+            # Calculate remaining documents and adjust batch size if needed
+            remaining = TOTAL_TARGET - status['total_processed']
+            current_batch_size = min(batch_size, remaining)
+            
+            progress_bar = st.progress(0)
+            st.write(f"Starting from position: {status['total_processed']}/{TOTAL_TARGET}")
+            
+            cleaned_true = self.cleaner.batch_process(true_df['text'].tolist())
+            true_embeddings = self.generator.batch_generate(
+                cleaned_true,
+                true_df['lens_id'].tolist(),
+                is_true_set=True
+            )
+            
+            try:
+                # Load new texts based on metric
+                if selected_metric == 'concatenated-cosine':
+                    new_df = self.loader.load_concat_new_texts(current_batch_size, resume=True)
+                else:
+                    new_df = self.loader.load_new_texts(current_batch_size, resume=True, selected_metric=selected_metric)
+                    
+                if not new_df.empty:
+                    cleaned_new = self.cleaner.batch_process(new_df['text'].tolist())
+                    new_embeddings = self.generator.batch_generate(
+                        cleaned_new,
+                        new_df['lens_id'].tolist(),
+                        is_true_set=False
+                    )
+                    
+                    # Calculate similarities based on selected metric
+                    if selected_metric == 'concatenated-cosine':
+                        similarities = self.similarity.batch_concatenated_cosine(
+                            new_embeddings,
+                            true_embeddings
+                        )
+                    else:
+                        similarities = self.similarity.batch_similarities(
+                            new_embeddings,
+                            true_embeddings,
+                            metric=selected_metric
+                        )
+                    
+                    self.similarity.store_results(
+                        new_df['lens_id'].tolist(),
+                        similarities,
+                        metric=selected_metric
+                    )
+                    
+                    new_total_processed = min(status['total_processed'] + len(new_df), TOTAL_TARGET)
+                    progress = new_total_processed / TOTAL_TARGET
+                    progress_bar.progress(progress)
+                    
+                    st.success(f"Processed {len(new_df)} documents ({new_total_processed}/{TOTAL_TARGET} total)")
+                    
+                    # Update status based on whether we've reached target
+                    status_label = 'completed' if new_total_processed >= TOTAL_TARGET else 'in_progress'
+                    self.db.update_processing_status(
+                        new_total_processed,
+                        TOTAL_TARGET,
+                        status_label,
+                        metric=selected_metric
+                    )
+                    
+                    # If we've reached target, show completion message
+                    if new_total_processed >= TOTAL_TARGET:
+                        st.info(f"Completed processing {TOTAL_TARGET} documents")
+                        
+                else:
+                    st.info("No more documents to process!")
+                    if status['total_processed'] < TOTAL_TARGET:
+                        self.db.update_processing_status(
+                            status['total_processed'],
+                            TOTAL_TARGET,
+                            'in_progress',
+                            metric=selected_metric
+                        )
+                    else:
+                        self.db.update_processing_status(
+                            TOTAL_TARGET,
+                            TOTAL_TARGET,
+                            'completed',
+                            metric=selected_metric
+                        )
+                        
+            except Exception as e:
+                self.db.update_processing_status(
+                    status['total_processed'],
+                    TOTAL_TARGET,
+                    'failed',
+                    metric=selected_metric
+                )
+                raise e
+                
+        except Exception as e:
+            st.error(f"Error processing data: {str(e)}")
+            st.error("Detailed Traceback:")
+            st.code(traceback.format_exc())
+    
+    def show_similarity_distribution(self, threshold: float, metric: str):
+        """Display similarity score distribution for specific metric"""
+        try:
+            # Explicitly query results for the selected metric
+            results = self.db.query_by_similarity(metric=metric)
+            
+            if not results.empty:
+                # Customize title for concatenated-cosine
+                title = "Concatenated Cosine Distribution" if metric == 'concatenated-cosine' else f"{metric.capitalize()} Similarity Distribution"
+                
+                fig = self.visualizer.plot_distribution(
+                    results['similarity_score'].values,
+                    threshold,
+                    title
+                )
+                
+                # Add specific range for concatenated-cosine
+                if metric == 'concatenated-cosine':
+                    fig.update_layout(
+                        yaxis_range=[0, 1],
+                        title_text=title + " (0-1 Range)",
+                    )
+                
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning(f"No {metric} similarity data available. Load data first.")
+        except Exception as e:
+            st.error(f"Error showing {metric} distribution: {str(e)}")
+
+    def show_top_similar_texts(self, metric: str):
+        """Display most similar texts for specific metric"""
+        try:
+            # Query results specifically for the selected metric
+            results = self.db.query_by_similarity(metric=metric)
+            
+            if not results.empty:
+                # For concatenated-cosine, show top 3 instead of 5
+                n_top = 3 if metric == 'concatenated-cosine' else 5
+                top_similar = results.nlargest(n_top, 'similarity_score')
+                
+                # Add metric-specific header
+                header = "Top Concatenated Similarity Matches" if metric == 'concatenated-cosine' else f"Top {metric.capitalize()} Similarity Matches"
+                st.subheader(header)
+                
+                for _, row in top_similar.iterrows():
+                    expander_title = f"Text ID: {row['text_id']}"
+                    if metric == 'concatenated-cosine':
+                        expander_title += " (Concatenated Match)"
+                    else:
+                        expander_title += f" ({metric.capitalize()} Similarity)"
+                        
+                    with st.expander(expander_title):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            score_label = "Concatenated Score" if metric == 'concatenated-cosine' else f"{metric.capitalize()} Score"
+                            st.metric(score_label, f"{row['similarity_score']:.3f}")
+                        with col2:
+                            st.metric("Confidence", f"{row['confidence']:.3f}")
+            else:
+                st.warning(f"No similar texts found for {metric} metric. Load data first.")
+        except Exception as e:
+            st.error(f"Error showing top similar {metric} texts: {str(e)}")
+
+    def show_results_table(self, threshold: float, metric: str):
+        """Display results table for specific metric"""
+        try:
+            # Get latest results specifically for the selected metric
+            results = self.db.query_by_similarity(
+                metric=metric, 
+                latest_only=True
+            )
+            
+            if not results.empty:
+                results['is_similar'] = results['similarity_score'] >= threshold
+                
+                # Customize table for concatenated-cosine
+                if metric == 'concatenated-cosine':
+                    st.subheader("Concatenated Similarity Results")
+                    results = results.rename(columns={
+                        'similarity_score': 'concatenated_score',
+                        'is_similar': 'is_concatenated_match'
+                    })
+                    columns = [
+                        'text_id',
+                        'concatenated_score',
+                        'confidence',
+                        'is_concatenated_match',
+                        'latest_batch_id',
+                        'created_at'
+                    ]
+                else:
+                    st.subheader(f"{metric.capitalize()} Similarity Results")
+                    columns = [
+                        'text_id',
+                        'similarity_score',
+                        'confidence',
+                        'is_similar',
+                        'latest_batch_id',
+                        'created_at'
+                    ]
+                
+                st.dataframe(
+                    results[columns].sort_values('created_at', ascending=False),
+                    use_container_width=True,
+                    height=400
+                )
+                
+                # Customize download button text
+                download_text = "Download Concatenated Results CSV" if metric == 'concatenated-cosine' else f"Download {metric.capitalize()} Results CSV"
+                
+                csv = results.to_csv(index=False)
+                st.download_button(
+                    download_text,
+                    csv,
+                    f"{metric}_similarity_results.csv",
+                    "text/csv",
+                    key=f'{metric}-download-csv'
+                )
+            else:
+                st.warning(f"No {metric} similarity results available. Load data first.")
+        except Exception as e:
+            st.error(f"Error showing {metric} results table: {str(e)}")
+    
+    def show_classification_metrics(self, threshold: float, metric: str):
+        try:
+            # Get processing status
+            status = self.db.get_processing_status(metric=metric)
+            total_target = 26712 if metric == 'concatenated-cosine' else 443249
+            status['total_rows'] = total_target
+            
+            total_all_time = self.db.get_total_processed_count()
+            
+            # Get batch stats with metric filter
+            batch_stats = self.db.get_batch_stats()
+            filtered_batch_stats = batch_stats[batch_stats['metric'] == metric] if not batch_stats.empty else pd.DataFrame()
+            
+            # Get current results for specific metric
+            current_results = self.db.query_by_similarity(metric=metric, latest_only=True)
+
+            # Processing Progress Section
+            st.subheader("Processing Progress")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Total Documents Processed", total_all_time)
+                st.metric("Documents Remaining", status['total_rows'] - status['total_processed'])
+            with col2:
+                if status['total_rows'] > 0:
+                    progress = (status['total_processed'] / status['total_rows']) * 100
+                    st.metric("Progress", f"{progress:.1f}%")
+                st.metric("Processing Status", status['status'].title())
+
+            # Batch Statistics
+            st.subheader("Batch Statistics")
+            if not filtered_batch_stats.empty:
+                st.metric("Total Batches", len(filtered_batch_stats))
+                st.metric("Last Batch Size", filtered_batch_stats.iloc[0]['doc_count'])
+                st.metric("Last Batch Date", filtered_batch_stats.iloc[0]['batch_end'].strftime('%Y-%m-%d %H:%M'))
+
+            # Similarity Metrics
+            if not current_results.empty:
+                st.subheader("Similarity Analysis")
+                predictions = current_results['similarity_score'] >= threshold
+                metrics = {
+                    "Similar Texts": sum(predictions),
+                    "Different Texts": len(predictions) - sum(predictions),
+                    f"Avg {metric.capitalize()} Score": current_results['similarity_score'].mean(),
+                    "Avg Confidence": current_results['confidence'].mean()
+                }
+                
+                cols = st.columns(len(metrics))
+                for col, (metric_name, value) in zip(cols, metrics.items()):
+                    col.metric(metric_name, f"{value:.2f}")
+        except Exception as e:
+            st.error(f"Error showing metrics: {str(e)}")
+
+    
+
 
     def generate_full_report(self, similarity_threshold: float, confidence_threshold: float, metrics_data: dict):
         if not metrics_data:
@@ -403,45 +593,7 @@ class DashboardApp:
             return None
 
 
-    def show_similarity_distribution(self, threshold: float, metric: str):
-        """Display similarity score distribution for specific metric"""
-        try:
-            # Explicitly query results for the selected metric
-            results = self.db.query_by_similarity(metric=metric)
-            
-            if not results.empty:
-                fig = self.visualizer.plot_distribution(
-                    results['similarity_score'].values,
-                    threshold,
-                    f"{metric.capitalize()} Similarity Distribution"
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.warning(f"No {metric} similarity data available. Load data first.")
-        except Exception as e:
-            st.error(f"Error showing {metric} distribution: {str(e)}")
-
-
-    def show_top_similar_texts(self, metric: str):
-        """Display most similar texts for specific metric"""
-        try:
-            # Query results specifically for the selected metric
-            results = self.db.query_by_similarity(metric=metric)
-            
-            if not results.empty:
-                top_similar = results.nlargest(5, 'similarity_score')
-                for _, row in top_similar.iterrows():
-                    with st.expander(f"Text ID: {row['text_id']} ({metric.capitalize()} Similarity)"):
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric(f"{metric.capitalize()} Score", 
-                                    f"{row['similarity_score']:.3f}")
-                        with col2:
-                            st.metric("Confidence", f"{row['confidence']:.3f}")
-            else:
-                st.warning(f"No similar texts found for {metric} metric. Load data first.")
-        except Exception as e:
-            st.error(f"Error showing top similar {metric} texts: {str(e)}")
+    
     
     def generate_summary_text(self, detailed_stats: Dict, correlation_matrix: pd.DataFrame) -> str:
         """Generate summary text report"""
@@ -490,201 +642,7 @@ class DashboardApp:
         return "\n".join(summary)
 
         
-    def show_classification_metrics(self, threshold: float, metric: str):
-        try:
-            # Get processing status
-            status = self.db.get_processing_status()
-            total_all_time = self.db.get_total_processed_count()
-            
-            # Get batch stats with metric filter
-            batch_stats = self.db.get_batch_stats()
-            filtered_batch_stats = batch_stats[batch_stats['metric'] == metric] if not batch_stats.empty else pd.DataFrame()
-            
-            # Get current results for specific metric
-            current_results = self.db.query_by_similarity(metric=metric, latest_only=True)
-
-            # Processing Progress Section
-            st.subheader("Processing Progress")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Total Documents Processed", total_all_time)
-                st.metric("Documents Remaining", status['total_rows'] - status['total_processed'])
-            with col2:
-                if status['total_rows'] > 0:
-                    progress = (status['total_processed'] / status['total_rows']) * 100
-                    st.metric("Progress", f"{progress:.1f}%")
-                st.metric("Processing Status", status['status'].title())
-
-            # Batch Statistics
-            st.subheader("Batch Statistics")
-            if not filtered_batch_stats.empty:
-                st.metric("Total Batches", len(filtered_batch_stats))
-                st.metric("Last Batch Size", filtered_batch_stats.iloc[0]['doc_count'])
-                st.metric("Last Batch Date", filtered_batch_stats.iloc[0]['batch_end'].strftime('%Y-%m-%d %H:%M'))
-
-            # Similarity Metrics
-            if not current_results.empty:
-                st.subheader("Similarity Analysis")
-                predictions = current_results['similarity_score'] >= threshold
-                metrics = {
-                    "Similar Texts": sum(predictions),
-                    "Different Texts": len(predictions) - sum(predictions),
-                    f"Avg {metric.capitalize()} Score": current_results['similarity_score'].mean(),
-                    "Avg Confidence": current_results['confidence'].mean()
-                }
-                
-                cols = st.columns(len(metrics))
-                for col, (metric_name, value) in zip(cols, metrics.items()):
-                    col.metric(metric_name, f"{value:.2f}")
-        except Exception as e:
-            st.error(f"Error showing metrics: {str(e)}")
-
-    def process_new_data(self, batch_size: int, selected_metric: str):
-        try:
-            TOTAL_TARGET = 443249  # Fixed total documents target
-            true_df = self.loader.load_true_set()
-            
-            status = self.db.get_processing_status(metric=selected_metric)
-            
-            # Check if already at or exceeding target
-            if status['total_processed'] >= TOTAL_TARGET:
-                st.warning(f"Already processed maximum {TOTAL_TARGET} documents")
-                return
-            
-            if status['total_rows'] == 0:
-                new_df = self.loader.load_new_texts(batch_size, resume=False, selected_metric=selected_metric)
-                self.db.update_processing_status(
-                    0, 
-                    TOTAL_TARGET, 
-                    'in_progress', 
-                    metric=selected_metric
-                )
-                status = self.db.get_processing_status(metric=selected_metric)
-            
-            # Calculate remaining documents and adjust batch size if needed
-            remaining = TOTAL_TARGET - status['total_processed']
-            current_batch_size = min(batch_size, remaining)
-            
-            progress_bar = st.progress(0)
-            st.write(f"Starting from position: {status['total_processed']}/{TOTAL_TARGET}")
-            
-            cleaned_true = self.cleaner.batch_process(true_df['text'].tolist())
-            true_embeddings = self.generator.batch_generate(
-                cleaned_true,
-                true_df['lens_id'].tolist(),
-                is_true_set=True
-            )
-            
-            try:
-                new_df = self.loader.load_new_texts(current_batch_size, resume=True, selected_metric=selected_metric)
-                if not new_df.empty:
-                    cleaned_new = self.cleaner.batch_process(new_df['text'].tolist())
-                    new_embeddings = self.generator.batch_generate(
-                        cleaned_new,
-                        new_df['lens_id'].tolist(),
-                        is_true_set=False
-                    )
-                    
-                    similarities = self.similarity.batch_similarities(
-                        new_embeddings,
-                        true_embeddings,
-                        metric=selected_metric
-                    )
-                    
-                    self.similarity.store_results(
-                        new_df['lens_id'].tolist(),
-                        similarities,
-                        metric=selected_metric
-                    )
-                    
-                    new_total_processed = min(status['total_processed'] + len(new_df), TOTAL_TARGET)
-                    progress = new_total_processed / TOTAL_TARGET
-                    progress_bar.progress(progress)
-                    
-                    st.success(f"Processed {len(new_df)} documents ({new_total_processed}/{TOTAL_TARGET} total)")
-                    
-                    # Update status based on whether we've reached target
-                    status_label = 'completed' if new_total_processed >= TOTAL_TARGET else 'in_progress'
-                    self.db.update_processing_status(
-                        new_total_processed,
-                        TOTAL_TARGET,
-                        status_label,
-                        metric=selected_metric
-                    )
-                    
-                    # If we've reached target, show completion message
-                    if new_total_processed >= TOTAL_TARGET:
-                        st.info(f"Completed processing {TOTAL_TARGET} documents")
-                        
-                else:
-                    st.info("No more documents to process!")
-                    if status['total_processed'] < TOTAL_TARGET:
-                        self.db.update_processing_status(
-                            status['total_processed'],
-                            TOTAL_TARGET,
-                            'in_progress',
-                            metric=selected_metric
-                        )
-                    else:
-                        self.db.update_processing_status(
-                            TOTAL_TARGET,
-                            TOTAL_TARGET,
-                            'completed',
-                            metric=selected_metric
-                        )
-                        
-            except Exception as e:
-                self.db.update_processing_status(
-                    status['total_processed'],
-                    TOTAL_TARGET,
-                    'failed',
-                    metric=selected_metric
-                )
-                raise e
-                
-        except Exception as e:
-            st.error(f"Error processing data: {str(e)}")
-            st.error("Detailed Traceback:")
-            st.code(traceback.format_exc())
-
-    def show_results_table(self, threshold: float, metric: str):
-        """Display results table for specific metric"""
-        try:
-            # Get latest results specifically for the selected metric
-            results = self.db.query_by_similarity(
-                metric=metric, 
-                latest_only=True
-            )
-            
-            if not results.empty:
-                results['is_similar'] = results['similarity_score'] >= threshold
-                
-                st.dataframe(
-                    results[[
-                        'text_id',
-                        'similarity_score',
-                        'confidence',
-                        'is_similar',
-                        'latest_batch_id',
-                        'created_at'
-                    ]].sort_values('created_at', ascending=False),
-                    use_container_width=True,
-                    height=400
-                )
-                
-                csv = results.to_csv(index=False)
-                st.download_button(
-                    f"Download {metric.capitalize()} Results CSV",
-                    csv,
-                    f"{metric}_similarity_results.csv",
-                    "text/csv",
-                    key=f'{metric}-download-csv'
-                )
-            else:
-                st.warning(f"No {metric} similarity results available. Load data first.")
-        except Exception as e:
-            st.error(f"Error showing {metric} results table: {str(e)}")
-
+    
 
     
 

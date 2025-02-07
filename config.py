@@ -1,9 +1,14 @@
 import os
 
+
 config = {
     'paths': {
-        'true_set_path': 'dataset/true_set/true_set.csv',
-        'new_texts_path': 'dataset/new_texts/new_texts.csv',
+        'true_set_path': 'dataset/true_set.csv',
+        'new_texts_path': 'dataset/new_texts.csv',
+        'true_set_path': 'dataset/true_set.csv',
+        'new_texts_path': 'dataset/new_texts.csv',
+        'concat_true_set_path': 'dataset/conc_true_set.csv',  
+        'concat_new_texts_path': 'dataset/conc_new_texts.csv',
         'embeddings_output_dir': 'dataset/embeddings'
     },
     'database': {
