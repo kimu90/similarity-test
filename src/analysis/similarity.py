@@ -39,92 +39,26 @@ class SimilarityAnalyzer:
     def calculate_cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
         """
         Calculate cosine similarity between vectors
-        
-        Args:
-            vec1: First embedding vector
-            vec2: Second embedding vector
-        
-        Returns:
-            Similarity score
         """
         return float(cosine_similarity(vec1.reshape(1, -1), vec2.reshape(1, -1)))
 
-    def batch_concatenated_cosine(self, vec1: np.ndarray, vec2: np.ndarray) -> np.ndarray:
-        """
-        Calculate cosine similarity between vectors
-        
-        Args:
-            vec1: First embedding vector array
-            vec2: Second embedding vector array
-        
-        Returns:
-            Similarity score array
-        """
-        # Already reshaped correctly for batch processing, no reshape needed
-        return cosine_similarity(vec1, vec2)
-
-    def compute_correlation_matrix(self):
-        """
-        Compute a correlation matrix between true set and new texts
-        
-        Returns:
-            np.ndarray: Correlation matrix of similarities
-        """
-        try:
-            # Combine texts from both datasets
-            all_texts = pd.concat([
-                self.true_set_df['text'], 
-                self.new_texts_df['text']
-            ])
-
-            # Create TF-IDF vectorizer
-            vectorizer = TfidfVectorizer(stop_words='english')
-            
-            # Compute TF-IDF matrix
-            tfidf_matrix = vectorizer.fit_transform(all_texts)
-            
-            # Compute cosine similarity matrix
-            correlation_matrix = cosine_similarity(tfidf_matrix)
-            
-            # Store the matrix as an instance attribute
-            self.correlation_matrix = correlation_matrix
-            
-            return correlation_matrix
-        
-        except Exception as e:
-            print(f"Error computing correlation matrix: {e}")
-            return None
-
     def calculate_jaccard_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
         """
-        Calculate Jaccard similarity between vectors
-        
-        Args:
-            vec1: First embedding vector
-            vec2: Second embedding vector
-        
-        Returns:
-            Similarity score
+        Optimized Jaccard similarity calculation
         """
-        # Convert vectors to binary (presence/absence)
-        vec1_binary = (vec1 > 0).astype(int)
-        vec2_binary = (vec2 > 0).astype(int)
+        # Pre-compute binary vectors using vectorized operations
+        vec1_binary = vec1 > 0
+        vec2_binary = vec2 > 0
         
-        intersection = np.sum(np.minimum(vec1_binary, vec2_binary))
-        union = np.sum(np.maximum(vec1_binary, vec2_binary))
+        # Fast intersection and union using numpy logical operations
+        intersection = np.logical_and(vec1_binary, vec2_binary).sum()
+        union = np.logical_or(vec1_binary, vec2_binary).sum()
         
         return float(intersection / union if union > 0 else 0.0)
 
     def calculate_lcs_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
         """
         Calculate LCS similarity between vectors
-        
-        Args:
-            vec1: First embedding vector
-            vec2: Second embedding vector
-        
-        Returns:
-            Similarity score
         """
         # Convert vectors to binary for sequence comparison
         vec1_binary = (vec1 > 0).astype(int)
@@ -143,12 +77,41 @@ class SimilarityAnalyzer:
         lcs_length = matrix[m,n]
         return float((2.0 * lcs_length) / (m + n) if (m + n) > 0 else 0.0)
 
+    def batch_similarities(self, new_vecs: np.ndarray, true_vecs: np.ndarray, metric: str = 'cosine') -> np.ndarray:
+        """
+        Calculate similarities for batches with optimized implementations
+        """
+        if metric == 'jaccard':
+            # Pre-compute binary matrices once
+            new_binary = new_vecs > 0
+            true_binary = true_vecs > 0
+            
+            # Use matrix operations for all pairs at once
+            intersection = new_binary @ true_binary.T
+            new_sums = new_binary.sum(axis=1, keepdims=True)
+            true_sums = true_binary.sum(axis=1)
+            union = new_sums + true_sums[np.newaxis, :] - intersection
+            
+            # Avoid division by zero and return
+            return np.divide(intersection, union, out=np.zeros_like(intersection, dtype=float), where=union!=0)
+        
+        elif metric == 'cosine':
+            return cosine_similarity(new_vecs, true_vecs)
+        
+        elif metric == 'lcs':
+            similarities = np.array([[
+                self.calculate_lcs_similarity(v1, v2)
+                for v2 in true_vecs
+            ] for v1 in new_vecs])
+            return similarities
+        
+        else:
+            self.logger.error(f"Unknown similarity metric: {metric}")
+            return np.array([])
+
     def get_true_embeddings_with_ids(self) -> Tuple[np.ndarray, List[str]]:
         """
         Retrieve TRUE set embeddings and their corresponding text IDs
-        
-        Returns:
-            Tuple of embeddings array and list of text IDs
         """
         try:
             query = """
@@ -159,12 +122,10 @@ class SimilarityAnalyzer:
             import pandas as pd
             df = pd.read_sql(query, self.db_manager.engine)
             
-            # Handle case where no true embeddings exist
             if df.empty:
                 self.logger.warning("No true embeddings found in database")
                 return np.array([]), []
             
-            # Convert embeddings to numpy array
             embeddings = np.stack(df['embedding'].apply(np.array).values)
             text_ids = df['text_id'].tolist()
             
@@ -176,9 +137,6 @@ class SimilarityAnalyzer:
     def get_new_embeddings_with_ids(self) -> Tuple[np.ndarray, List[str]]:
         """
         Retrieve new embeddings and their corresponding text IDs
-        
-        Returns:
-            Tuple of embeddings array and list of text IDs
         """
         try:
             query = """
@@ -189,12 +147,10 @@ class SimilarityAnalyzer:
             import pandas as pd
             df = pd.read_sql(query, self.db_manager.engine)
             
-            # Handle case where no new embeddings exist
             if df.empty:
                 self.logger.warning("No new embeddings found in database")
                 return np.array([]), []
             
-            # Convert embeddings to numpy array
             embeddings = np.stack(df['embedding'].apply(np.array).values)
             text_ids = df['text_id'].tolist()
             
@@ -203,70 +159,6 @@ class SimilarityAnalyzer:
             self.logger.error(f"Error retrieving new embeddings: {str(e)}")
             return np.array([]), []
 
-    
-
-    def batch_similarities(self, new_vecs: np.ndarray, true_vecs: np.ndarray, metric: str = 'cosine') -> np.ndarray:
-        """
-        Calculate similarities for batches
-        
-        Args:
-            new_vecs: Matrix of new embeddings
-            true_vecs: Matrix of TRUE set embeddings
-            metric: Which similarity metric to use ('cosine', 'jaccard', or 'lcs')
-        
-        Returns:
-            Matrix of similarity scores
-        """
-        # Add logging and error checking
-        if new_vecs.size == 0:
-            self.logger.error("No new embeddings provided")
-            return np.array([])
-        
-        if true_vecs.size == 0:
-            self.logger.error("No TRUE set embeddings provided")
-            return np.array([])
-        
-        # Ensure 2D arrays
-        if new_vecs.ndim == 1:
-            new_vecs = new_vecs.reshape(1, -1)
-        
-        if true_vecs.ndim == 1:
-            true_vecs = true_vecs.reshape(1, -1)
-        
-        try:
-            # Fast path for cosine similarity
-            if metric == 'cosine':
-                similarities = cosine_similarity(new_vecs, true_vecs)
-                
-            # Calculate Jaccard similarity if requested
-            elif metric == 'jaccard':
-                similarities = np.array([[
-                    self.calculate_jaccard_similarity(v1, v2)
-                    for v2 in true_vecs
-                ] for v1 in new_vecs])
-
-            # Fast path for cosine similarity
-            elif metric == 'concatenated-cosine':
-                return self.batch_concatenated_cosine(new_vecs, true_vecs)
-                
-            # Calculate LCS similarity if requested
-            elif metric == 'lcs':
-                similarities = np.array([[
-                    self.calculate_lcs_similarity(v1, v2)
-                    for v2 in true_vecs
-                ] for v1 in new_vecs])
-                
-            else:
-                self.logger.error(f"Unknown similarity metric: {metric}")
-                return np.array([])
-            
-            self.logger.info(f"Calculated {metric} similarities: shape {similarities.shape}")
-            return similarities
-            
-        except Exception as e:
-            self.logger.error(f"Error calculating similarities: {str(e)}")
-            return np.array([])
-
     def get_most_similar(self, 
                         similarities: np.ndarray, 
                         true_text_ids: List[str], 
@@ -274,25 +166,12 @@ class SimilarityAnalyzer:
                         k: int = 5) -> List[SimilarityResult]:
         """
         Get top k similar indices with scores
-        
-        Args:
-            similarities: Matrix of similarity scores
-            true_text_ids: List of TRUE set text IDs
-            new_text_ids: List of new text IDs
-            k: Number of top results to return
-        
-        Returns:
-            List of similarity results
         """
-        # Flatten the similarities matrix
         flat_similarities = similarities.flatten()
-        
-        # Get indices of top k similarities
         top_k_indices = np.argsort(flat_similarities)[-k:][::-1]
         
         results = []
         for idx in top_k_indices:
-            # Convert flat index to 2D matrix index
             new_idx = idx // len(true_text_ids)
             true_idx = idx % len(true_text_ids)
             
@@ -311,28 +190,16 @@ class SimilarityAnalyzer:
     def _calculate_confidence(self, similarity_score: float) -> float:
         """
         Calculate confidence score based on similarity
-        
-        Args:
-            similarity_score: Raw similarity score
-        
-        Returns:
-            Confidence score
         """
         return min(1.0, similarity_score / self.similarity_threshold)
 
     def store_results(self, new_text_ids: List[str], similarities: np.ndarray, metric: str = 'cosine'):
         """
         Store similarity results
-        
-        Args:
-            new_text_ids: List of text IDs
-            similarities: Matrix of similarity scores
-            metric: Similarity metric used
         """
         try:
             max_similarities = similarities.max(axis=1)
             
-            # Prepare results for database storage
             results = [
                 {
                     'text_id': text_id,
@@ -350,43 +217,3 @@ class SimilarityAnalyzer:
         except Exception as e:
             self.logger.error(f"Error storing similarity results: {str(e)}")
             raise
-
-if __name__ == "__main__":
-    # Test similarity analyzer
-    from src.storage.db_manager import DatabaseManager
-
-    # Initialize components
-    db_manager = DatabaseManager(config)
-    similarity = SimilarityAnalyzer(config, db_manager)
-
-    # Retrieve embeddings from database
-    true_embeddings, true_text_ids = similarity.get_true_embeddings_with_ids()
-    new_embeddings, new_text_ids = similarity.get_new_embeddings_with_ids()
-
-    # Test each similarity metric
-    for metric in ['cosine', 'jaccard', 'lcs']:
-        print(f"\nTesting {metric} similarity:")
-        
-        # Calculate similarities
-        similarities = similarity.batch_similarities(
-            new_embeddings, 
-            true_embeddings,
-            metric=metric
-        )
-
-        # Get most similar texts
-        results = similarity.get_most_similar(
-            similarities, 
-            true_text_ids, 
-            new_text_ids, 
-            k=3
-        )
-
-        # Store results
-        similarity.store_results(new_text_ids, similarities, metric)
-
-        # Print results
-        for result in results:
-            print(f"\nSimilarity: {result.score:.3f}")
-            print(f"Confidence: {result.confidence:.3f}")
-            print(f"Text ID: {result.text_id}")

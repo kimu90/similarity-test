@@ -271,61 +271,6 @@ class DatabaseManager:
         finally:
             session.close()
 
-    def reset_processing_status(self, metric='concatenated-cosine'):
-        """
-        Reset processing status specifically for concatenated-cosine metric.
-        
-        Args:
-            metric (str): Metric to reset, defaulting to 'concatenated-cosine'
-        """
-        # Target for concatenated-cosine is 26712 documents
-        TOTAL_TARGET = 26712
-        
-        session = self.SessionLocal()
-        try:
-            # Reset processing status
-            session.execute(
-                sa.text("""
-                    DELETE FROM processing_tracker 
-                    WHERE metric = 'concatenated-cosine'
-                """)
-            )
-            
-            # Insert a new status record
-            session.execute(
-                sa.text("""
-                    INSERT INTO processing_tracker 
-                    (last_processed_total_processed, total_rows, status, metric)
-                    VALUES (:total_processed, :total_target, :status, :metric)
-                """),
-                {
-                    'total_processed': 0, 
-                    'total_target': TOTAL_TARGET, 
-                    'status': 'not_started', 
-                    'metric': 'concatenated-cosine'
-                }
-            )
-            
-            # Clear results for concatenated-cosine metric
-            session.execute(
-                sa.text("""
-                    DELETE FROM classifications 
-                    WHERE metric = 'concatenated-cosine'
-                """)
-            )
-            
-            # Commit changes
-            session.commit()
-            
-        except Exception as e:
-            # Rollback in case of error
-            session.rollback()
-            self.logger.error(f"Error resetting processing status: {str(e)}")
-            raise
-        finally:
-            # Close the session
-            session.close()
-
     def query_by_similarity(self, min_score: float = 0.0, max_score: float = 1.0,
                          min_confidence: float = 0.0, max_confidence: float = 1.0,
                          metric: str = 'cosine', latest_only: bool = False) -> pd.DataFrame:

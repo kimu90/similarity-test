@@ -217,32 +217,24 @@ def show_comprehensive_report(self, similarity_threshold: float):
         
         metrics = ['cosine', 'jaccard', 'concatenated-cosine']
         metrics_data = {}
-        results_data = {}
-        status_data = {}
         
         for metric in metrics:
             st.subheader(f"{metric.capitalize()} Similarity Report")
             
-            # Get all results first with min_score=0
+            # Get results for current metric
             results = self.db.query_by_similarity(
                 metric=metric,
-                min_score=0.0  # Get all results
+                min_score=similarity_threshold
             )
             
-            # Get processing status
-            status = self.db.get_processing_status(metric=metric)
-            # Set total rows based on metric
-            total_target = 26712 if metric == 'concatenated-cosine' else 443249
-            status['total_rows'] = total_target
-            status_data[metric] = status
-            
-            # Only show warning if no results and status is not completed
-            if results.empty and status['status'] != 'completed':
+            if results.empty:
                 st.warning(f"No {metric} similarity results found.")
                 continue
 
-            # Filter results by threshold after getting status
-            similar_results = results[results['similarity_score'] >= similarity_threshold]
+            # Get processing status
+            status = db.get_processing_status(metric=metric)
+            status['total_rows'] = 443249  # Total target documents
+            status_data[metric] = status
             
             # Display metrics in columns
             col1, col2 = st.columns(2)
@@ -254,9 +246,9 @@ def show_comprehensive_report(self, similarity_threshold: float):
             with col2:
                 remaining = status['total_rows'] - status['total_processed']
                 st.metric("Remaining Documents", remaining)
-                similar_docs = len(similar_results)
+                similar_docs = len(results[results['similarity_score'] >= similarity_threshold])
                 st.metric("Similar Documents", similar_docs)
-                different_docs = len(results) - similar_docs
+                different_docs = len(results[results['similarity_score'] < similarity_threshold])
                 st.metric("Different Documents", different_docs)
             
             # Store metrics data
@@ -266,117 +258,98 @@ def show_comprehensive_report(self, similarity_threshold: float):
                 'results': results
             }
             
-            # Create visualizations if we have data
-            if not results.empty:
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    # Distribution plot
-                    fig_dist = go.Figure(data=go.Violin(
-                        y=results['similarity_score'],
-                        name=metric.capitalize(),
-                        box_visible=True,
-                        meanline_visible=True
-                    ))
-                    
-                    title = ("Concatenated Cosine Distribution" if metric == 'concatenated-cosine' 
-                            else f"{metric.capitalize()} Score Distribution")
-                    
-                    fig_dist.update_layout(
-                        title=title,
-                        yaxis_title="Similarity Score",
-                        height=400
-                    )
-                    
-                    # Add specific range for concatenated-cosine
-                    if metric == 'concatenated-cosine':
-                        fig_dist.update_layout(
-                            yaxis_range=[0, 1],
-                            title_text=title + " (0-1 Range)",
-                        )
-                    
-                    st.plotly_chart(fig_dist, use_container_width=True)
-                
-                with col2:
-                    # Threshold analysis plot
-                    thresholds = np.linspace(0, 1, 20)
-                    ratios = [(results['similarity_score'] >= threshold).mean() 
-                             for threshold in thresholds]
-                    
-                    fig_threshold = go.Figure(data=go.Scatter(
-                        x=thresholds,
-                        y=ratios,
-                        mode='lines+markers',
-                        name=metric.capitalize()
-                    ))
-                    
-                    threshold_title = ("Concatenated Cosine Threshold Analysis" 
-                                     if metric == 'concatenated-cosine' 
-                                     else "Document Ratio vs Threshold")
-                    
-                    fig_threshold.update_layout(
-                        title=threshold_title,
-                        xaxis_title="Threshold",
-                        yaxis_title="Ratio of Documents",
-                        height=400
-                    )
-                    st.plotly_chart(fig_threshold, use_container_width=True)
-                    
-                    # Store figures for PDF
-                    results_data[metric] = {
-                        'fig_dist': fig_dist,
-                        'fig_threshold': fig_threshold
-                    }
-                
-                # Detailed statistics
-                st.subheader("Detailed Statistics")
-                stats = {
-                    'Mean': results['similarity_score'].mean(),
-                    'Median': results['similarity_score'].median(),
-                    'Std Dev': results['similarity_score'].std(),
-                    'Min': results['similarity_score'].min(),
-                    'Max': results['similarity_score'].max(),
-                    '25th Percentile': results['similarity_score'].quantile(0.25),
-                    '75th Percentile': results['similarity_score'].quantile(0.75),
-                    'Above 0.8': (results['similarity_score'] >= 0.8).mean(),
-                    'Below 0.2': (results['similarity_score'] < 0.2).mean()
-                }
-                
-                st.table(pd.DataFrame.from_dict(stats, orient='index', 
-                                              columns=[f"{metric.capitalize()} Value"]))
-                
-                # Download raw data
-                csv = results.to_csv(index=False)
-                st.download_button(
-                    label=f"Download {metric.capitalize()} Raw Data (CSV)",
-                    data=csv,
-                    file_name=f"{metric}_data_{similarity_threshold}.csv",
-                    mime="text/csv"
+            # Create visualizations
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Distribution plot
+                fig_dist = go.Figure(data=go.Violin(
+                    y=results['similarity_score'],
+                    name=metric.capitalize(),
+                    box_visible=True,
+                    meanline_visible=True
+                ))
+                fig_dist.update_layout(
+                    title=f"{metric.capitalize()} Score Distribution",
+                    yaxis_title="Similarity Score",
+                    height=400
                 )
+                st.plotly_chart(fig_dist, use_container_width=True)
+            
+            with col2:
+                # Threshold analysis plot
+                thresholds = np.linspace(0, 1, 20)
+                ratios = [(results['similarity_score'] >= threshold).mean() 
+                         for threshold in thresholds]
+                
+                fig_threshold = go.Figure(data=go.Scatter(
+                    x=thresholds,
+                    y=ratios,
+                    mode='lines+markers',
+                    name=metric.capitalize()
+                ))
+                fig_threshold.update_layout(
+                    title="Document Ratio vs Threshold",
+                    xaxis_title="Threshold",
+                    yaxis_title="Ratio of Documents",
+                    height=400
+                )
+                st.plotly_chart(fig_threshold, use_container_width=True)
+                
+                # Store figures for PDF
+                results_data[metric] = {
+                    'fig_dist': fig_dist,
+                    'fig_threshold': fig_threshold
+                }
+            
+            # Detailed statistics
+            st.subheader("Detailed Statistics")
+            stats = {
+                'Mean': results['similarity_score'].mean(),
+                'Median': results['similarity_score'].median(),
+                'Std Dev': results['similarity_score'].std(),
+                'Min': results['similarity_score'].min(),
+                'Max': results['similarity_score'].max(),
+                '25th Percentile': results['similarity_score'].quantile(0.25),
+                '75th Percentile': results['similarity_score'].quantile(0.75),
+                'Above 0.8': (results['similarity_score'] >= 0.8).mean(),
+                'Below 0.2': (results['similarity_score'] < 0.2).mean()
+            }
+            
+            st.table(pd.DataFrame.from_dict(stats, orient='index', 
+                                          columns=[f"{metric.capitalize()} Value"]))
+            
+            # Download raw data
+            csv = results.to_csv(index=False)
+            st.download_button(
+                label=f"Download {metric.capitalize()} Raw Data (CSV)",
+                data=csv,
+                file_name=f"{metric}_data_{similarity_threshold}.csv",
+                mime="text/csv"
+            )
             
             st.markdown("---")
         
-        # Combined metrics comparison if we have data
-        if any(len(data['results']) > 0 for data in metrics_data.values()):
+        # Combined metrics comparison
+        if metrics_data:
             st.subheader("Metrics Comparison")
             
             fig = go.Figure()
             for i, metric in enumerate(metrics_data):
-                if len(metrics_data[metric]['results']) > 0:
-                    fig.add_trace(go.Pie(
-                        labels=['Similar', 'Different'],
-                        values=[metrics_data[metric]['similar'], 
-                               metrics_data[metric]['different']],
-                        name=metric.capitalize(),
-                        domain={'row': 0, 'column': i},
-                        title=f"{metric.capitalize()} Similarity",
-                        textinfo='percent+label',
-                        hole=.3
-                    ))
+                fig.add_trace(go.Pie(
+                    labels=['Similar', 'Different'],
+                    values=[metrics_data[metric]['similar'], 
+                           metrics_data[metric]['different']],
+                    name=metric.capitalize(),
+                    domain={'row': 0, 'column': i},
+                    title=f"{metric.capitalize()} Similarity",
+                    textinfo='percent+label',
+                    hole=.3
+                ))
             
             fig.update_layout(
                 title=f"Similarity Comparison (Threshold: {similarity_threshold})",
-                grid={'rows': 1, 'columns': len(metrics_data)},
+                grid={'rows': 1, 'columns': 2},
                 height=400
             )
             
@@ -385,14 +358,14 @@ def show_comprehensive_report(self, similarity_threshold: float):
             # Combined metrics download
             combined_data = []
             for metric, data in metrics_data.items():
-                if len(data['results']) > 0:
-                    results = data['results'].copy()
+                results = data['results']
+                if not results.empty:
                     results['metric'] = metric
                     results['is_similar'] = results['similarity_score'] >= similarity_threshold
                     combined_data.append(results)
             
             if combined_data:
-                combined_df = pd.concat(combined_data, ignore_index=True)
+                combined_df = pd.concat(combined_data)
                 
                 # Download combined raw data
                 csv = combined_df.to_csv(index=False)
@@ -404,20 +377,25 @@ def show_comprehensive_report(self, similarity_threshold: float):
                 )
                 
                 # Create summary DataFrame
-                summary_data = []
-                for metric, data in metrics_data.items():
-                    if len(data['results']) > 0:
-                        results = data['results']
-                        summary_data.append({
-                            'Metric': metric,
-                            'Total Documents': len(results),
-                            'Similar Documents': data['similar'],
-                            'Different Documents': data['different'],
-                            'Mean Score': results['similarity_score'].mean(),
-                            'Median Score': results['similarity_score'].median()
-                        })
+                summary_df = pd.DataFrame(columns=[
+                    'Metric',
+                    'Total Documents',
+                    'Similar Documents',
+                    'Different Documents',
+                    'Mean Score',
+                    'Median Score'
+                ])
                 
-                summary_df = pd.DataFrame(summary_data)
+                for metric, data in metrics_data.items():
+                    results = data['results']
+                    summary_df = pd.concat([summary_df, pd.DataFrame([{
+                        'Metric': metric,
+                        'Total Documents': len(results),
+                        'Similar Documents': data['similar'],
+                        'Different Documents': data['different'],
+                        'Mean Score': results['similarity_score'].mean(),
+                        'Median Score': results['similarity_score'].median()
+                    }])], ignore_index=True)
                 
                 # Display summary statistics
                 st.subheader("Summary Statistics")
