@@ -522,7 +522,7 @@ class DashboardApp:
 
     def process_new_data(self, batch_size: int, selected_metric: str):
         try:
-            TOTAL_TARGET = 443249  # Fixed total documents target
+            TOTAL_TARGET = 20073  # Fixed total documents target
             true_df = self.loader.load_true_set()
             
             status = self.db.get_processing_status(metric=selected_metric)
