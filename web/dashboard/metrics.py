@@ -215,7 +215,7 @@ def show_comprehensive_report(self, similarity_threshold: float):
     try:
         st.header(f"Comprehensive Analysis Report (Similarity Threshold: {similarity_threshold})")
         
-        metrics = ['cosine', 'jaccard', 'concatenated-cosine']
+        metrics = ['cosine', 'jaccard', 'euclidean', 'Levenshtein', 'lcs']
         metrics_data = {}
         
         for metric in metrics:

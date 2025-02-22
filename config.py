@@ -3,8 +3,8 @@ import os
 
 config = {
     'paths': {
-        'true_set_path': 'dataset/true_claim.csv',
-        'new_texts_path': 'dataset/false_claim.csv',
+        'true_set_path': 'dataset/new_true_set.csv',
+        'new_texts_path': 'dataset/new_test_set.csv',
 
         'concat_true_set_path': 'dataset/conc_true_set.csv',  
         'concat_new_texts_path': 'dataset/conc_new_texts.csv',

@@ -32,7 +32,9 @@ class TextClassifier:
         self.thresholds = {
             'cosine': config.get('cosine_threshold', 0.8),
             'jaccard': config.get('jaccard_threshold', 0.8),
-            'lcs': config.get('lcs_threshold', 0.8)
+            'lcs': config.get('lcs_threshold', 0.8),
+            'euclidean': config.get('euclidean_threshold', 0.8)
+
         }
         self.min_confidence = config.get('min_confidence', 0.6)
         

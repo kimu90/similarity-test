@@ -45,7 +45,7 @@ class DashboardApp:
         st.sidebar.header("Controls")
         selected_metric = st.sidebar.selectbox(
             "Similarity Metric",
-            ["cosine", "jaccard"],
+            ["cosine", "jaccard","euclidean", "Levenshtein", "lcs"],
             format_func=lambda x: x.capitalize()
         )
         similarity_threshold = st.sidebar.selectbox(
@@ -78,7 +78,7 @@ class DashboardApp:
         try:
             st.header(f"Comprehensive Analysis Report (Similarity Threshold: {similarity_threshold})")
             
-            metrics = ['cosine', 'jaccard']
+            metrics = ['cosine', 'jaccard', 'Levenshtein', 'euclidian', 'lcs']
             metrics_data = {}
             
             for metric in metrics:
@@ -96,7 +96,7 @@ class DashboardApp:
 
                 # Get processing status
                 status = self.db.get_processing_status(metric=metric)
-                status['total_rows'] = 20073  # Total target documents
+                status['total_rows'] = 8555 # Total target documents
                 
                 # Display metrics in columns
                 col1, col2 = st.columns(2)
@@ -522,7 +522,7 @@ class DashboardApp:
 
     def process_new_data(self, batch_size: int, selected_metric: str):
         try:
-            TOTAL_TARGET = 20073  # Fixed total documents target
+            TOTAL_TARGET = 8555  # Fixed total documents target
             true_df = self.loader.load_true_set()
             
             status = self.db.get_processing_status(metric=selected_metric)

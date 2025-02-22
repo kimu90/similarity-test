@@ -1,61 +1,52 @@
 import pandas as pd
-import sqlalchemy as sa
-from datetime import datetime
+import os
 
-# Database connection configuration
-config = {
-    'database': {
-        'user': 'user',
-        'password': 'password',
-        'host': 'localhost',
-        'port': '5432',
-        'dbname': 'similarity_db'
-    }
-}
+# Define file paths
+data_folder = "dataset"
+og_new_path = os.path.join(data_folder, "false_claim.csv")
+csv_files = ["euclidean_similarity_results.csv"]
 
-def export_scores():
-    # Create database URL
-    db_url = (
-        f"postgresql://{config['database']['user']}:"
-        f"{config['database']['password']}@"
-        f"{config['database']['host']}:"
-        f"{config['database']['port']}/"
-        f"{config['database']['dbname']}"
-    )
-    
-    # Create engine
-    engine = sa.create_engine(db_url)
-    
-    try:
-        # Query to get all classification scores
-        query = """
-            SELECT 
-                text_id,
-                similarity_score,
-                confidence,
-                label,
-                metric,
-                latest_batch_id,
-                created_at
-            FROM classifications
-            ORDER BY created_at DESC
-        """
-        
-        # Read data into DataFrame
-        df = pd.read_sql(query, engine)
-        
-        # Generate timestamp for filename
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"classification_scores_{timestamp}.csv"
-        
-        # Export to CSV
-        df.to_csv(filename, index=False)
-        print(f"Scores exported successfully to {filename}")
-        
-    except Exception as e:
-        print(f"Error exporting scores: {e}")
-    finally:
-        engine.dispose()
+# Load og_new.csv
+if not os.path.exists(og_new_path):
+    print("og_new.csv not found in data folder.")
+    exit()
 
-if __name__ == "__main__":
-    export_scores()
+og_df = pd.read_csv(og_new_path)
+
+# Strip spaces from column names
+og_df.columns = og_df.columns.str.strip()
+
+# Print actual column names for debugging
+print("Columns in og_new.csv:", list(og_df.columns))
+
+# Ensure required columns exist
+if "lens_id" not in og_df.columns or "text" not in og_df.columns:
+    print(f"Missing required columns in og_new.csv. Found: {list(og_df.columns)}")
+    exit()
+
+# Process each CSV file in the data folder
+for file in csv_files:
+    file_path = os.path.join(data_folder, file)
+
+    if os.path.exists(file_path):
+        df = pd.read_csv(file_path)
+
+        # Strip spaces from column names in the target CSV
+        df.columns = df.columns.str.strip()
+
+        # Ensure required column exists in the target CSV
+        if "text_id" not in df.columns:
+            print(f"Missing 'text_id' column in {file}. Found: {list(df.columns)}. Skipping.")
+            continue
+
+        # Merge based on matching text_id (from CSV) with lens_id (from og_new.csv)
+        df = df.merge(og_df[["lens_id", "text"]], left_on="text_id", right_on="lens_id", how="left")
+
+        # Drop the extra lens_id column after merging
+        df.drop(columns=["lens_id"], inplace=True)
+
+        # Save updated CSV in the same folder
+        df.to_csv(file_path, index=False)
+        print(f"Updated {file} saved in {data_folder}/")
+    else:
+        print(f"{file} not found. Skipping.")
